@@ -94,3 +94,15 @@ markers = [
 python_version = "3.11"
 files = ["src", "tests"]
 strict = true
+
+# ---------------------------------------------------------------------------
+# python-semantic-release
+# ---------------------------------------------------------------------------
+[tool.semantic_release]
+version_variables = ["src/ingestio/__init__.py:__version__"]
+build_command = "uv build"
+commit_message = "chore(release): v{version}"
+# Both differ from the defaults: without them the first automated release
+# would jump straight to 1.0.0.
+allow_zero_version = true
+major_on_zero = false
