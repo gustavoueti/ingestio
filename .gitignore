@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environment
+.venv/
+.env
+.env.*
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# uv.lock is deliberately NOT ignored: it is committed for reproducible builds.
+
+# Databricks
+.databricks
+
+# Notebooks
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# iCloud Drive creates conflict duplicates ("core 2.py") inside synced folders.
+# They are never source and must not reach a commit.
+* [0-9].*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code
+CLAUDE.md
+.claude/
