@@ -21,10 +21,11 @@ jobs:
       url: https://pypi.org/p/ingestio
 
     steps:
+      # No `ref:` here on purpose: checking out a SHA gives a detached HEAD, and
+      # semantic-release needs to be on a branch to match its release groups.
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-          ref: ${{ github.sha }}
 
       - uses: astral-sh/setup-uv@v9.0.0
         with:
