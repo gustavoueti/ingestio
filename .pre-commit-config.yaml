@@ -1,0 +1,17 @@
+# pre-commit is a development dependency, so `uv sync` already installs it.
+# Enable the hooks once per clone with: uv run pre-commit install --hook-type commit-msg
+default_install_hook_types: [commit-msg]
+
+repos:
+  - repo: local
+    hooks:
+      - id: no-ai-attribution
+        name: reject AI attribution in commit messages
+        description: Rejects Claude co-author trailers and "Generated with Claude Code" footers.
+        language: pygrep
+        # Anchored at the start of the line, where a real trailer or footer begins. The diff
+        # that `git commit -v` appends to the message prefixes every line with "+", "-" or a
+        # space, so a change that only mentions the trailer can still be committed.
+        entry: '^(co-authored-by:.*(claude|anthropic)|(🤖\s*)?generated (with|by) \[?claude)'
+        args: [--ignore-case]
+        stages: [commit-msg]

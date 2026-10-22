@@ -34,6 +34,14 @@ runs.
 The library ships the engine, one reader, one writer and two generic callbacks. The stages
 that are specific to your ingestion are yours to write — that is the point.
 
+## Design philosophy
+
+Two concepts, and nothing else: **connectors** talk to external systems through the `Reader`
+and `Writer` protocols and decide nothing else, and **callbacks** are the stages that act on
+the data. The library composes rather than imposes: the smallest abstraction that works, no
+registries, and no dependencies in the core. The full text is in
+[docs/philosophy.md](docs/philosophy.md).
+
 ## Example: a public API into a volume
 
 ```python
