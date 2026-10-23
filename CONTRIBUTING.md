@@ -69,8 +69,12 @@ Commit `uv.lock` together with any change to dependencies.
 
 - Use the standard `logging` module, never `print`: `logger = logging.getLogger(__name__)`.
 - Pass arguments `%`-style, so formatting only happens when the record is emitted.
-- Prefix every line with the run id: `"[%s] process started"`, with `self.run_id`.
+- Start every line with the run id, `[a3f7c9] ┌ process started · 2 steps`, including each
+  line of a message that spans several.
+- Messages never carry ANSI codes: color is added on output, only by the handler that
+  `log_to_console` attaches.
 - The package root registers a `NullHandler`; configuring logging is the application's job.
+  `log_to_console` is the opt-in shortcut, and it touches only the `ingestio` logger.
 
 ### Dependencies
 

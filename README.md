@@ -132,17 +132,43 @@ class SkipWhenEmpty(Callback):
 
 ## Logging
 
-Standard `logging`, never `print`, and every record carries the run id — so concurrent
-ingestions on the same cluster stay readable.
+Standard `logging`, never `print`, and every line carries the run id — so concurrent
+ingestions on the same cluster stay readable. A run logs as a tree: the process, each step,
+and every callback moment that ran, with its outcome and how long it took.
 
+```text
+[a3f7c9] ┌ process started · 2 steps
+[a3f7c9] │ ┌ extract (1/2) · 1 callback
+[a3f7c9] │ │ ✔ ReadSource.run 412ms
+[a3f7c9] │ └ extract done in 413ms
+[a3f7c9] │ ┌ load (2/2) · 2 callbacks
+[a3f7c9] │ │ ✔ AddLineageColumns.run 3ms
+[a3f7c9] │ │ ✔ WriteTarget.run 15ms
+[a3f7c9] │ └ load done in 19ms
+[a3f7c9] └ process finished in 432ms
 ```
-[a3f7c9] process started | 2 steps
-[a3f7c9] > extract (1/2) | 1 callbacks
-[a3f7c9] < extract | 0.412s
-[a3f7c9] > load (2/2) | 2 callbacks
-[a3f7c9] < load | 0.019s
-[a3f7c9] process finished | 0.431s
+
+A failing callback gets a `✖` line at `ERROR` with the type and message of the exception, and
+the step and the process close as failed. The exception itself still propagates.
+
+```text
+[a3f7c9] │ │ ✖ WriteTarget.run failed after 2ms: PermissionError: [Errno 13] Permission denied
+[a3f7c9] │ └ load failed in 3ms
+[a3f7c9] └ process failed in 415ms
 ```
+
+Nothing shows until logging is configured. To see the tree on the console, opt in with one
+call:
+
+```python
+from ingestio import log_to_console
+
+log_to_console()  # stderr, colored on a terminal; NO_COLOR turns color off
+```
+
+It touches only the `ingestio` logger. A notebook is not a terminal: pass `color=True` when it
+renders ANSI colors. The full format is in
+[docs/concepts/lifecycle.md](docs/concepts/lifecycle.md#logging).
 
 ## Roadmap
 
