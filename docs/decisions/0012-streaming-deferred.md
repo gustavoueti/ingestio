@@ -31,6 +31,11 @@ What in version 0.0.1 leans towards batch:
   and `PostgresWriter.write()` needs the whole DataFrame before it commits. A streaming or CDC
   source for PostgreSQL, such as logical replication, would be a different connector that
   tracks its own offsets.
+- The disk connectors ([spec](../../specs/disk_connectors.md)) lean towards batch:
+  `DiskReader.read()` makes one selection of files, with a watermark fixed when the reader is
+  built, and `DiskWriter.write()` needs the whole DataFrame. A streaming file source, such as
+  Structured Streaming's file source or Auto Loader, tracks the files it processed in a
+  checkpoint and would be a different connector.
 
 What keeps the door open:
 

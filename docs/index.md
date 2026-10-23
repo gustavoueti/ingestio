@@ -19,7 +19,7 @@ How the library works and how it is used.
 
 | Page | Covers |
 |---|---|
-| [concepts/connectors.md](concepts/connectors.md) | `Reader` and `Writer`, writing a connector, `JsonApiReader`, `JsonLinesWriter`, the PostgreSQL connectors, extras. |
+| [concepts/connectors.md](concepts/connectors.md) | `Reader` and `Writer`, writing a connector, `JsonApiReader`, `JsonLinesWriter`, the PostgreSQL connectors, `DiskReader`, `DiskWriter`, extras. |
 | [concepts/callbacks.md](concepts/callbacks.md) | `Callback`, sharing data through the state, `ReadSource`, `WriteTarget`, cancellation. |
 | [concepts/criticality.md](concepts/criticality.md) | Essential and non-essential callbacks. Not implemented yet. |
 | [concepts/lifecycle.md](concepts/lifecycle.md) | Building and running a process, the three passes of a step, failure, logging. |
@@ -56,6 +56,7 @@ One spec per change to `src/`, in [`specs/`](../specs/), written from
 | [scd2_callback.md](../specs/scd2_callback.md) | The SCD2 default callback. |
 | [run_progress_log.md](../specs/run_progress_log.md) | The tree-shaped progress log of a run and `log_to_console`. |
 | [postgres_connectors.md](../specs/postgres_connectors.md) | The PostgreSQL reader and writer, and the `ingestio[postgres]` extra. |
+| [disk_connectors.md](../specs/disk_connectors.md) | The disk reader and writer: Spark file sources, selection by watermark before loading. |
 
 ## Agent tooling
 
