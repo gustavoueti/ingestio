@@ -1,7 +1,8 @@
 """`Reader` and `Writer`: the two kinds of connector.
 
-A connector is injected into the callback that needs it, so a single callback may combine
-several. The payload type is unconstrained.
+Every connector the library ships satisfies one of these protocols, and the read and write
+callbacks build the connector that the job's configuration names. The payload type is
+unconstrained.
 """
 
 from typing import Protocol, TypeVar

@@ -6,8 +6,7 @@ Small, composable library for building data ingestion pipelines.
 assume your data is a table, that your architecture has bronze and silver layers, or that
 your processing is batch. Those are things you build with it, not things it imposes.
 
-> **Status: early alpha (0.0.1).** The core is functional and tested, the API is not stable
-> yet.
+> **Status: early alpha.** The core is functional and tested, the API is not stable yet.
 
 ## Install
 
@@ -26,45 +25,58 @@ Three pieces, and the ordering is always yours:
 |---|---|
 | **Step** | a named point of the process; holds the callbacks that run there |
 | **Callback** | the code of one stage |
-| **Connector** | a reader or a writer, injected into the callback that needs it |
+| **Connector** | a reader or a writer of an external system, named in the job's configuration |
 
 Steps run in list order, and callbacks inside a step run in list order. There is no
 priority attribute and no hidden reordering: the sequence you write is the sequence that
 runs.
 
-The library ships the engine, a few connectors (a JSON API reader, a JSON Lines writer, and
+The library ships the engine, the connectors (a JSON API reader, a JSON Lines writer, and
 readers and writers for PostgreSQL, files on disk, Amazon S3, Google Cloud Storage, Databricks
-volumes, Unity Catalog tables and BigQuery) and two generic callbacks. The stages that
-are specific to your ingestion are yours to write — that is the point.
+volumes, Unity Catalog tables and BigQuery) and two generic callbacks, `ReadSource` and
+`WriteTarget`. A job names its source and its target in a JSON file, and those two callbacks
+build the matching connector. The stages that are specific to your ingestion are yours to
+write — that is the point.
 
 ## Design philosophy
 
 Two concepts, and nothing else: **connectors** talk to external systems through the `Reader`
 and `Writer` protocols and decide nothing else, and **callbacks** are the stages that act on
 the data. The library composes rather than imposes: the smallest abstraction that works, no
-registries, and no dependencies in the core. The full text is in
+open registries (the one table maps the configuration's system names to the connectors the
+library ships), and no dependencies in the core. The full text is in
 [docs/philosophy.md](docs/philosophy.md).
 
 ## Example: a public API into a volume
 
+`config.json` names the source and the target:
+
+```json
+{
+  "source": {"system": "json_api", "url": "https://api.example.com/v1/orders"},
+  "target": {"system": "json_lines", "path": "/Volumes/main/bronze/orders.jsonl"}
+}
+```
+
+`main.py` only places the callbacks:
+
 ```python
+from pathlib import Path
+
 from ingestio import Process, ReadSource, Step, WriteTarget
-from ingestio.connector.all import JsonApiReader, JsonLinesWriter
+
+CONFIG = Path(__file__).with_name("config.json")
 
 process = Process([
-    Step("extract", [
-        ReadSource(JsonApiReader("https://api.example.com/v1/orders")),
-    ]),
-    Step("load", [
-        WriteTarget(JsonLinesWriter("/Volumes/main/bronze/orders.jsonl")),
-    ]),
+    Step("extract", [ReadSource(CONFIG)]),
+    Step("load", [WriteTarget(CONFIG)]),
 ]).run()
 
 print(len(process.state["records"]))
 ```
 
-A Databricks volume is an ordinary path, so the same code runs on a laptop and on a
-cluster.
+`WriteTarget` appends to the file; `WriteTarget(CONFIG, replace=True)` replaces it. A
+Databricks volume is an ordinary path, so the same job runs on a laptop and on a cluster.
 
 ## Writing a callback
 
@@ -106,7 +118,7 @@ Drop it into the step where it belongs:
 ```python
 Step("load", [
     AddLineageColumns(source="orders-api"),
-    WriteTarget(JsonLinesWriter("/Volumes/main/bronze/orders.jsonl")),
+    WriteTarget(CONFIG),
 ])
 ```
 
@@ -179,18 +191,20 @@ ingestio does not impose a layout on a job. A suggested minimum is two files:
 
 ```text
 orders_job/
-├── config.json   the job's parameters
-└── main.py       reads them, builds the process and runs it
+├── config.json   the job's source, its target and its parameters
+└── main.py       places the callbacks and runs the process
 ```
 
-`config.json` holds the parameters of the ingestion. The library never reads it: `main.py`
-does, and passes the values to the constructors of ingestio. Credentials never go in it.
+`config.json` names the source and the target of the ingestion. `ReadSource` reads its
+`source` section and `WriteTarget` its `target` section; each builds the connector that the
+section's `system` names, with the section's other keys as the connector's arguments.
+Credentials never go in it.
 
 ```json
 {
-  "table_name": "public.orders",
-  "primary_key": "id",
-  "watermark_column": "updated_at"
+  "source": {"system": "postgres", "table_name": "public.orders", "watermark_column": "updated_at"},
+  "target": {"system": "postgres", "table_name": "raw.orders"},
+  "primary_key": "id"
 }
 ```
 
@@ -199,7 +213,6 @@ runs the process. This one copies the orders changed since the last run from the
 database into the warehouse:
 
 ```python
-import json
 import os
 from datetime import datetime
 from pathlib import Path
@@ -213,9 +226,9 @@ from ingestio import (
     WriteTarget,
     log_to_console,
 )
-from ingestio.connector.all import PostgresConnection, PostgresReader, PostgresWriter
+from ingestio.connector.all import PostgresConnection
 
-config = json.loads(Path(__file__).with_name("config.json").read_text(encoding="utf-8"))
+CONFIG = Path(__file__).with_name("config.json")
 
 # Credentials come from the environment; on Databricks, from dbutils.secrets.get.
 shop = PostgresConnection(
@@ -245,29 +258,29 @@ class SkipEmptyBatch(Callback):
 log_to_console()
 Process([
     Step("extract", [
-        ReadSource(PostgresReader(
-            config["table_name"],
-            shop,
-            watermark_column=config["watermark_column"],
-            watermark_value=last_watermark(),
-        )),
+        ReadSource(CONFIG, connection=shop, watermark_value=last_watermark()),
     ]),
     Step("load", [
         SkipEmptyBatch(),
-        WriteTarget(PostgresWriter(config["table_name"], warehouse)),
+        WriteTarget(CONFIG, connection=warehouse),
     ]),
 ]).run()
 ```
 
 - `ReadSource` and `WriteTarget` ship with the library; `last_watermark` and `SkipEmptyBatch`
-  belong to the job. `WriteTarget` appends. A job that replaces the target writes a callback
-  of its own that calls `write(df, replace=True)`.
-- `primary_key` is in the configuration but not in the code. A connector takes only the
-  parameters it uses, and neither PostgreSQL connector uses it
-  ([ADR 0013](docs/decisions/0013-connector-configuration-convention.md)); it is there for the
-  job's callbacks that do, such as a merge.
-- The writer gets `config["table_name"]` because the warehouse keeps the table's name. A job
-  whose target has another name passes that name to the writer.
+  belong to the job. `WriteTarget` appends; `WriteTarget(CONFIG, connection=warehouse,
+  replace=True)` replaces the target.
+- The connection, with its credentials, and the run's watermark are arguments of the
+  callbacks, not keys of the file: they are not JSON, and the library reads no secret.
+- `primary_key` is a parameter of the job: both callbacks ignore every top-level member other
+  than their own section, so it is there for the job's own callbacks, such as a merge. Inside
+  a section, a key the system does not take is an error, so a typo such as `watermark_colum`
+  stops the job before anything runs.
+- Moving the target is an edit of its section, such as
+  `{"system": "unity_catalog", "table_name": "main.bronze.orders"}`. An argument the new system
+  does not take is an error too, so that move also drops `connection=warehouse`.
+- Every system, its keys and its arguments are in
+  [docs/concepts/configuration.md](docs/concepts/configuration.md).
 
 These two files are the whole job, and they run anywhere: in a container, as a Databricks job,
 on a laptop. The connectors built on Spark, every reader and writer except the JSON ones, expect
@@ -279,8 +292,8 @@ connector are in [docs/concepts/connectors.md](docs/concepts/connectors.md).
 
 ## Roadmap
 
-More connectors (MySQL with change data capture, MongoDB), and recipes — an optional
-declarative way to assemble a process, never a required one.
+More connectors (MySQL with change data capture, MongoDB), and the append-only and SCD2
+write callbacks.
 
 ## License
 

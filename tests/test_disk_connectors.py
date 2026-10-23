@@ -26,7 +26,6 @@ import pytest
 from pyspark.sql import DataFrame, SparkSession, functions
 from pyspark.sql.types import IntegerType, StructField, StructType
 
-from ingestio import Process, Reader, ReadSource, Step, Writer, WriteTarget
 from ingestio.connector.all import DiskReader, DiskWriter
 
 T0 = datetime(2026, 10, 21, 9, 0, tzinfo=UTC)
@@ -1209,27 +1208,6 @@ def test_at026_the_writer_creates_lists_and_deletes_nothing_itself(
 
 
 # --- Composition --------------------------------------------------------------------------
-
-
-def test_at027_read_source_and_write_target_move_a_dataframe_and_append(
-    log: _Log, spark: _FakeSpark, src: Path
-) -> None:
-    _file(src, "a.csv")
-    source: Reader[DataFrame] = DiskReader(src, "csv", spark=_session(spark))
-    target: Writer[DataFrame] = DiskWriter("/data/orders", "parquet")
-
-    process = Process(
-        [
-            Step("extract", [ReadSource(source, into="orders")]),
-            Step("load", [WriteTarget(target, key="orders")]),
-        ]
-    ).run()
-
-    (load,) = _loads(log)
-    assert process.state["orders"] is _frame(load.frame)
-    (save,) = _saves(log)
-    assert save.frame is load.frame
-    assert save.mode == "append"
 
 
 def test_at028_the_connectors_write_no_log_lines(

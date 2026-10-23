@@ -11,25 +11,31 @@
   the Unity Catalog connectors by
   [specs/unity_catalog_connectors.md](../../specs/unity_catalog_connectors.md) and to the
   BigQuery connectors by [specs/bigquery_connectors.md](../../specs/bigquery_connectors.md).
+  Amended on 2026-10-23 by [ADR 0015](0015-choose-connectors-from-the-job-configuration.md) and
+  [specs/config_connectors.md](../../specs/config_connectors.md): the library's read and write
+  callbacks read the job's configuration file and map the keys of its sections to these
+  arguments.
 
 ## Context
 
-The parameters of one ingestion (the source table, the primary key, the watermark column) will
-come from a JSON job configuration that the library does not define yet. The PostgreSQL
-connectors are the first to need those parameters, so they set the example for every later
-connector and for the specification of the configuration. Connection credentials are a
-different matter: on Databricks they come from `dbutils.secrets.get`, which the library never
-imports.
+The parameters of one ingestion (the source table, the primary key, the watermark column) come
+from a JSON job configuration. When this ADR was written the library did not define it yet. The
+PostgreSQL connectors were the first to need those parameters, so they set the example for every
+later connector and for the specification of the configuration, which
+[ADR 0015](0015-choose-connectors-from-the-job-configuration.md) now gives. Connection
+credentials are a different matter: on Databricks they come from `dbutils.secrets.get`, which
+the library never imports.
 
 ## Decision
 
 - A connector takes an ingestion's parameters as constructor arguments named after the keys of
   the job configuration (`table_name`, `watermark_column`). It never reads configuration files,
-  environment variables or secret stores, and it has no `from_config`. Mapping configuration
-  keys to arguments is the job's task, and a later spec covers the configuration file and
-  recipes.
+  environment variables or secret stores, and it has no `from_config`. The library's read and
+  write callbacks read the job's configuration file and map the keys of its `source` and
+  `target` sections to these arguments ([ADR 0015](0015-choose-connectors-from-the-job-configuration.md)).
 - Credentials are separate arguments, never part of the configuration. The PostgreSQL
-  connectors group them, with the host and database, in a `PostgresConnection` value.
+  connectors group them, with the host and database, in a `PostgresConnection` value. They
+  reach the read or write callback as its arguments, built by the job.
 - A reader extracts only what the job needs, and does the filtering inside the source: a
   watermark filter runs in the system that holds the data, not in the engine that receives it.
 
@@ -39,6 +45,8 @@ The maintainer gave two reasons when accepting this decision:
 
 - **Arguments, not configuration.** The connector does not need to read the configuration:
   the job's `main.py` already reads it, and only has to pass the values to the connector.
+  Since [ADR 0015](0015-choose-connectors-from-the-job-configuration.md), the read and write
+  callback, not `main.py`, reads the configuration; the connector still does not.
 - **Filtering in the source.** Filtering inside the source avoids overloading it and saves
   processing. In an incremental ingestion, the amount of data the job handles should be as
   small as possible.
@@ -50,39 +58,38 @@ own configuration and its own secrets.
 
 ## Consequences
 
-- Every future connector follows the convention, and the configuration spec must map its keys
-  to these arguments. A key that a connector does not use is not an argument: neither
+- Every future connector follows the convention, and its keys in the configuration are these
+  arguments. A key that a connector does not use is not an argument: neither
   PostgreSQL connector accepts `primary_key`, because a plain read, an append and a replace do
-  not use it.
+  not use it. In a configuration such a key is rejected.
 - Decision 27 of the spec has a consequence. The maintainer chose `table_name` for the writer
   too, so both connectors take an argument of that name, but it does not mean the same thing in
-  both places. In the job configuration `table_name` is the source table. On
-  `PostgresWriter` it names the target. This is recorded here and not resolved: a job that
-  writes to a table other than its source must not pass the configuration's `table_name` to the
-  writer.
+  both places. In a flat job configuration `table_name` was the source table, and on
+  `PostgresWriter` it names the target. Since ADR 0015 each section of the configuration names
+  its own system, so the `target` section's `table_name` is the target's and the ambiguity does
+  not arise. It remains only for a job's own callback that builds a writer itself: it must not
+  pass a source's `table_name` to the writer.
 - `DiskWriter` has the same consequence: its `path` names the target, as `table_name` does on
-  `PostgresWriter`, while in the job configuration `path` is the source directory. A job that
-  writes somewhere other than where it reads must not pass the configuration's `path` to the
-  writer.
+  `PostgresWriter`. In a configuration the `target` section's `path` is the target's. A job's
+  own callback that writes somewhere other than where it reads must not pass the source's
+  `path` to the writer.
 - For a file system, the unit a reader can filter is the file. `DiskReader` filters inside the
   source by selecting the files above the watermark before Spark loads anything, so Spark
   never opens a file that was not selected
   ([spec](../../specs/disk_connectors.md)).
-- `S3Writer` has the same consequence: its `path` names the target, while in the job
-  configuration `path` is the source prefix.
-- `GcsWriter` has the same consequence: its `path` names the target, while in the job
-  configuration `path` is the source prefix.
-- `VolumeWriter` has the same consequence: its `volume` and `path` name the target, while in
-  the job configuration they are the source volume and directory.
-- `UnityCatalogWriter` has the same consequence: its `table_name` names the target, while in the
-  job configuration `table_name` is the source table. A job that writes to a table other than
-  its source must not pass the configuration's `table_name` to the writer.
+- `S3Writer` has the same consequence: its `path` names the target, which in a configuration is
+  the `target` section's `path`.
+- `GcsWriter` has the same consequence: its `path` names the target, which in a configuration is
+  the `target` section's `path`.
+- `VolumeWriter` has the same consequence: its `volume` and `path` name the target, which in a
+  configuration are the `target` section's.
+- `UnityCatalogWriter` has the same consequence: its `table_name` names the target, which in a
+  configuration is the `target` section's `table_name`.
 - A predicate in the table's scan is how `UnityCatalogReader` filters inside the source: Delta
   compares it with the statistics of each file and skips the files that cannot match
   ([spec](../../specs/unity_catalog_connectors.md)).
-- `BigQueryWriter` has the same consequence: its `table_name` names the target, while in the job
-  configuration `table_name` is the source table. A job that writes to a table other than its
-  source must not pass the configuration's `table_name` to the writer.
+- `BigQueryWriter` has the same consequence: its `table_name` names the target, which in a
+  configuration is the `target` section's `table_name`.
 - The `filter` option that `BigQueryReader` passes to Spark's BigQuery data source, which hands it
   to the Storage Read API as the row restriction of the read session, is how it filters inside the
   source: the rows outside the slice never leave BigQuery

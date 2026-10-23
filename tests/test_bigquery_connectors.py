@@ -45,7 +45,6 @@ from google.cloud.bigquery import PolicyTagList, SchemaField, Table
 from pyspark import SparkContext
 from pyspark.sql import DataFrame, SparkSession
 
-from ingestio import Process, Reader, ReadSource, Step, Writer, WriteTarget
 from ingestio.connector.all import BigQueryReader, BigQueryWriter
 
 TABLE = "acme-data.sales.orders"
@@ -1911,29 +1910,6 @@ def test_at036_column_names_are_quoted_identifiers_in_the_statement(
 
 
 # --- Composition --------------------------------------------------------------------------
-
-
-def test_at037_read_source_and_write_target_move_a_dataframe_and_append(
-    log: _Log, factory: _FakeClientFactory
-) -> None:
-    spark = _FakeSpark(log, columns=["id", "payload"])
-    source: Reader[DataFrame] = BigQueryReader(TABLE, spark=_session(spark))
-    target: Writer[DataFrame] = BigQueryWriter(TABLE)
-
-    process = Process(
-        [
-            Step("extract", [ReadSource(source, into="orders")]),
-            Step("load", [WriteTarget(target, key="orders")]),
-        ]
-    ).run()
-
-    (load,) = _loads(log)
-    assert log.events[0] == load
-    assert process.state["orders"] is _frame(load.frame)
-    stg = _staging(log)
-    assert _transcript(log)[1:] == _write_transcript(stg, _insert(stg.quoted))
-    (save,) = _saves(log)
-    assert save.frame is load.frame
 
 
 def test_at038_the_connectors_write_no_log_lines(

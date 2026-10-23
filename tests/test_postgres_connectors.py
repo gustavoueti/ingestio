@@ -34,7 +34,6 @@ import pytest
 from psycopg import sql
 from pyspark.sql import DataFrame, SparkSession
 
-from ingestio import Process, Reader, ReadSource, Step, Writer, WriteTarget
 from ingestio.connector.all import PostgresConnection, PostgresReader, PostgresWriter
 
 BASE_OPTIONS = {
@@ -1588,34 +1587,6 @@ def test_at034_column_names_are_quoted_as_identifiers(
     assert (
         f'INSERT INTO "public"."orders" ("Id", "say ""hi""") SELECT "Id", "say ""hi""" FROM {stg}'
     ) in statements
-
-
-# --- Composition --------------------------------------------------------------------------
-
-
-def test_at035_read_source_and_write_target_move_a_dataframe_and_append(
-    log: _Log, pg: _FakePsycopg, conn: PostgresConnection
-) -> None:
-    spark = _FakeSpark(log, columns=["id", "payload"])
-    source: Reader[DataFrame] = PostgresReader("public.orders", conn, spark=_session(spark))
-    target: Writer[DataFrame] = PostgresWriter("public.orders", conn)
-
-    process = Process(
-        [
-            Step("extract", [ReadSource(source, into="orders")]),
-            Step("load", [WriteTarget(target, key="orders")]),
-        ]
-    ).run()
-
-    (load,) = _loads(log)
-    assert log.events[0] == load
-    assert process.state["orders"] is _frame(load.frame)
-    stg = _staging(log)
-    assert _transcript(log.events[1:]) == _write_transcript(stg)
-    (save,) = _saves(log)
-    assert _lower(save.options) == _lower(_save_options(stg))
-    statements = [event.statement for event in _executed(log)]
-    assert not [s for s in statements if s.startswith("TRUNCATE")], statements
 
 
 # --- Integration --------------------------------------------------------------------------

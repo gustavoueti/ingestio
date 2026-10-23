@@ -19,7 +19,10 @@ of them. If something does not fit, stop and report it instead of creating a thi
 An integration with an external system: MongoDB, PostgreSQL, Salesforce, BigQuery, a file
 system. A connector declares what it can do through the `Reader` and/or `Writer`
 capabilities, which are protocols, with no class hierarchy. A connector only knows how to talk
-to its system; it does not decide write strategy, format or architecture.
+to its system; it does not decide write strategy, format or architecture. The library ships
+every connector. A job names its source and target systems in its configuration, and the
+library's read and write callbacks build the matching connector
+([ADR 0015](decisions/0015-choose-connectors-from-the-job-configuration.md)).
 
 ### Callback
 
@@ -54,11 +57,15 @@ concept: nobody extends them to integrate a system or to add an action.
 ## Principles
 
 - **Simplicity.** The smallest abstraction that solves the problem. No internal frameworks,
-  registries or magic.
+  open registries or magic. The one mapping from names to classes is the closed table of the
+  connectors the library ships, which its read and write callbacks use
+  ([ADR 0015](decisions/0015-choose-connectors-from-the-job-configuration.md)).
 - **The user's autonomy.** The library composes; it does not impose. A developer creates their
   own callback in their own code, for example by importing `Callback` in their `main.py`, and
-  defines there whatever behaviour they want, criticality included. Extending connectors and
-  callbacks must be as simple as possible: no registries, no extra configuration.
+  defines there whatever behaviour they want, criticality included. Extending callbacks must
+  be as simple as possible: no registries, no extra configuration. Users do not extend
+  connectors: a system the library does not integrate gets a connector contributed to the
+  library.
 - **A core without dependencies.** Integrations with external systems are optional extras,
   such as `ingestio[spark]`.
 - **Streaming is a future direction.** It is not implemented now, but every decision that

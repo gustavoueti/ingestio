@@ -19,8 +19,9 @@ How the library works and how it is used.
 
 | Page | Covers |
 |---|---|
-| [concepts/connectors.md](concepts/connectors.md) | `Reader` and `Writer`, writing a connector, `JsonApiReader`, `JsonLinesWriter`, the PostgreSQL connectors, `DiskReader`, `DiskWriter`, `S3Reader`, `S3Writer`, `GcsReader`, `GcsWriter`, `VolumeReader`, `VolumeWriter`, `UnityCatalogReader`, `UnityCatalogWriter`, `BigQueryReader`, `BigQueryWriter`, extras. |
-| [concepts/callbacks.md](concepts/callbacks.md) | `Callback`, sharing data through the state, `ReadSource`, `WriteTarget`, cancellation. |
+| [concepts/connectors.md](concepts/connectors.md) | `Reader` and `Writer`, using a connector, `JsonApiReader`, `JsonLinesWriter`, the PostgreSQL connectors, `DiskReader`, `DiskWriter`, `S3Reader`, `S3Writer`, `GcsReader`, `GcsWriter`, `VolumeReader`, `VolumeWriter`, `UnityCatalogReader`, `UnityCatalogWriter`, `BigQueryReader`, `BigQueryWriter`, extras. |
+| [concepts/configuration.md](concepts/configuration.md) | The job's JSON configuration file: the `source` and `target` sections, the `system` names, the keys of each system, the callback arguments, append and replace, errors. |
+| [concepts/callbacks.md](concepts/callbacks.md) | `Callback`, sharing data through the state, `ReadSource` and `WriteTarget` (they build their connector from the configuration), cancellation. |
 | [concepts/criticality.md](concepts/criticality.md) | Essential and non-essential callbacks. Not implemented yet. |
 | [concepts/lifecycle.md](concepts/lifecycle.md) | Building and running a process, the three passes of a step, failure, logging. |
 
@@ -33,7 +34,7 @@ Architecture decision records, in [decisions/](decisions/), written from
 |---|---|---|
 | [0001](decisions/0001-src-layout-uv-hatchling.md) | Package with a src layout, hatchling and uv | accepted |
 | [0002](decisions/0002-zero-dependency-core.md) | Keep the core free of dependencies | accepted |
-| [0003](decisions/0003-connectors-as-protocols.md) | Define connectors as Reader and Writer protocols | accepted |
+| [0003](decisions/0003-connectors-as-protocols.md) | Define connectors as Reader and Writer protocols | accepted, amended by 0015 |
 | [0004](decisions/0004-shared-process-state.md) | Share data between callbacks through the process state | accepted |
 | [0005](decisions/0005-declaration-order.md) | Run steps and callbacks in the order they are declared | accepted |
 | [0006](decisions/0006-three-pass-step.md) | Run a step in three passes: before, run, after | accepted |
@@ -43,8 +44,9 @@ Architecture decision records, in [decisions/](decisions/), written from
 | [0010](decisions/0010-release-automation.md) | Release from the commit history on main | accepted |
 | [0011](decisions/0011-callbacks-as-stages-with-criticality.md) | Treat callbacks as stages with a criticality | accepted, not implemented |
 | [0012](decisions/0012-streaming-deferred.md) | Defer streaming, and record what affects it | accepted |
-| [0013](decisions/0013-connector-configuration-convention.md) | Give a connector an ingestion's parameters as constructor arguments | accepted |
+| [0013](decisions/0013-connector-configuration-convention.md) | Give a connector an ingestion's parameters as constructor arguments | accepted, amended by 0015 |
 | [0014](decisions/0014-create-a-missing-target-only-when-derived-from-the-data.md) | Create a missing target only in the form the system derives from the data | accepted |
+| [0015](decisions/0015-choose-connectors-from-the-job-configuration.md) | Choose the reader and the writer from the job's configuration file | accepted |
 
 ## Specs
 
@@ -63,6 +65,7 @@ One spec per change to `src/`, in [`specs/`](../specs/), written from
 | [volume_connectors.md](../specs/volume_connectors.md) | The Databricks volume reader and writer, listed with the Databricks SDK's Files API, and the `ingestio[databricks]` extra. |
 | [unity_catalog_connectors.md](../specs/unity_catalog_connectors.md) | The Unity Catalog reader and writer: Delta tables by their three-part name, a watermark filter in the table's scan, a table created when missing. |
 | [bigquery_connectors.md](../specs/bigquery_connectors.md) | The BigQuery reader and writer: a watermark filter in the Storage Read API with a frozen bound, an atomic write through a staging table, and the `ingestio[bigquery]` extra. |
+| [config_connectors.md](../specs/config_connectors.md) | `ReadSource` and `WriteTarget` choose the reader and the writer from the job's JSON configuration, through a closed table of the shipped connectors. |
 
 ## Agent tooling
 

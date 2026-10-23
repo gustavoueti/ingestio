@@ -180,3 +180,74 @@ below. The entry is removed when the work lands.
   alternative is a staging collection, for example with `$out`, which replaces the target
   collection only once the aggregation finishes.
 - Does MongoDB need CDC too, through change streams, as MySQL does?
+
+## 11. Choose the reader and the writer from the job's configuration
+
+**Idea.** The job's configuration names the source system and the target system, with their
+parameters. The callback that extracts reads the source part, builds the matching reader and
+reads; the callback that writes reads the target part, builds the matching writer and writes.
+The job imports `ingestio` and places callbacks; it never imports or builds a connector.
+
+**Spec:** [specs/config_connectors.md](../specs/config_connectors.md), which answers the
+questions below. The entry is removed when the work lands.
+
+**Conflict with the philosophy.**
+
+- Turning a name in the configuration, such as `"postgres"`, into a connector class is a
+  registry, even as a fixed dictionary inside the callback, and the philosophy rules out
+  registries and extra configuration.
+- [ADR 0013](decisions/0013-connector-configuration-convention.md) gives the job the mapping of
+  configuration keys to constructor arguments; here the callback does it. The ADR expects a
+  later spec for "the configuration file and recipes", and the README's roadmap describes
+  recipes as "an optional declarative way to assemble a process, never a required one".
+
+The connectors keep deciding nothing: the choice is the callback's, which fits the two
+concepts.
+
+**Open questions.**
+
+- Does it add to the explicit form or replace it? `ReadSource(reader)` and
+  `WriteTarget(writer)` can stay, with the configuration as a second way, as the roadmap's
+  recipes describe, or the configuration can become the only way. Do the existing callbacks
+  accept a configuration, or are there new callbacks?
+- How does the callback get the configuration: as a constructor argument that `main.py` read
+  (`ReadSource(config["source"])`), from `process.state`, or as the path of the JSON file,
+  which the callback reads itself?
+- What is its shape? One possibility, which also ends the ambiguity of `table_name` recorded in
+  ADR 0013, because the source and the target each have their own section:
+
+  ```json
+  {
+    "source": {"system": "postgres", "table_name": "public.orders", "watermark_column": "updated_at"},
+    "target": {"system": "unity_catalog", "table_name": "main.bronze.orders"}
+  }
+  ```
+
+  What is the key called (`system`, `type`, `connector`), and what are the systems' names?
+- Credentials stay out of the configuration under ADR 0013, and on Databricks they come from
+  `dbutils.secrets.get`, which the library never imports. How does a reader built from the
+  configuration get its `PostgresConnection`?
+  - the job builds it and passes it to the callback, so the job still writes that code;
+  - the configuration names environment variables, which the callback reads;
+  - the configuration names a Databricks secret scope and its keys, which ties the library to
+    Databricks.
+
+  The same question applies to the `client` arguments. Connectors that fall back on a default
+  client, which finds its credentials in the environment, need nothing.
+- Values that change on every run, such as `watermark_value`, come from the job's code, not
+  from a static file. How does the callback receive them, and who stores the next watermark?
+- Append or replace: today the calling callback chooses with `replace=`, and the configuration
+  has no mode. Does the target section get one? Write strategies are callbacks, so how does
+  this meet the drafted append-only and SCD2 callbacks: do they also build their writer from
+  the configuration?
+- A connector the library does not ship: with no registry, how does a job use it? It keeps the
+  explicit form; it passes a mapping such as `{"crm": CrmReader}` to the callback; or the
+  configuration holds an import path such as `"crm_job.readers.CrmReader"`.
+- Errors: an unknown system, a missing parameter, a parameter the connector does not take (such
+  as `primary_key` today). Fail or ignore? When: while the process is built, or when the
+  callback runs?
+- Extras stay as they are: a configuration that names `bigquery` where the extra is missing
+  raises the `ImportError` that names the extra, as building the connector does today. So
+  changing a job's source from `disk` to `s3` takes an edit of its JSON and, when the new
+  system has an extra, of its install. Is that enough, or should the error name the
+  configuration key too?
