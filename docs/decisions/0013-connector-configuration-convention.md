@@ -4,7 +4,13 @@
 - **Recorded:** 2026-10-23
 - **Evidence:** [specs/postgres_connectors.md](../../specs/postgres_connectors.md), decisions 2, 3,
   27 and 31, taken by the maintainer; `src/ingestio/connector/postgres.py`; rationale given by
-  the maintainer on 2026-10-23
+  the maintainer on 2026-10-23. Amended on 2026-10-23 by
+  [specs/s3_connectors.md](../../specs/s3_connectors.md), question 6, and extended the same day
+  to the GCS connectors by [specs/gcs_connectors.md](../../specs/gcs_connectors.md) and to the
+  volume connectors by [specs/volume_connectors.md](../../specs/volume_connectors.md) and to
+  the Unity Catalog connectors by
+  [specs/unity_catalog_connectors.md](../../specs/unity_catalog_connectors.md) and to the
+  BigQuery connectors by [specs/bigquery_connectors.md](../../specs/bigquery_connectors.md).
 
 ## Context
 
@@ -62,6 +68,46 @@ own configuration and its own secrets.
   source by selecting the files above the watermark before Spark loads anything, so Spark
   never opens a file that was not selected
   ([spec](../../specs/disk_connectors.md)).
+- `S3Writer` has the same consequence: its `path` names the target, while in the job
+  configuration `path` is the source prefix.
+- `GcsWriter` has the same consequence: its `path` names the target, while in the job
+  configuration `path` is the source prefix.
+- `VolumeWriter` has the same consequence: its `volume` and `path` name the target, while in
+  the job configuration they are the source volume and directory.
+- `UnityCatalogWriter` has the same consequence: its `table_name` names the target, while in the
+  job configuration `table_name` is the source table. A job that writes to a table other than
+  its source must not pass the configuration's `table_name` to the writer.
+- A predicate in the table's scan is how `UnityCatalogReader` filters inside the source: Delta
+  compares it with the statistics of each file and skips the files that cannot match
+  ([spec](../../specs/unity_catalog_connectors.md)).
+- `BigQueryWriter` has the same consequence: its `table_name` names the target, while in the job
+  configuration `table_name` is the source table. A job that writes to a table other than its
+  source must not pass the configuration's `table_name` to the writer.
+- The `filter` option that `BigQueryReader` passes to Spark's BigQuery data source, which hands it
+  to the Storage Read API as the row restriction of the read session, is how it filters inside the
+  source: the rows outside the slice never leave BigQuery
+  ([spec](../../specs/bigquery_connectors.md)).
+- The BigQuery connectors keep credentials out of the configuration and out of `options`: they
+  come from the environment (Application Default Credentials) or from the `client` the job builds,
+  and `billing_project` only says which project is billed. A default client, created when the job
+  passes none, follows Application Default Credentials, which the connector neither reads nor
+  configures. Spark and the client each find them on their own.
+- Selecting objects before loading is how `S3Reader` filters inside the source: Spark never
+  opens an object that was not selected ([spec](../../specs/s3_connectors.md)). `GcsReader`
+  filters the same way: Spark never opens a blob that was not selected
+  ([spec](../../specs/gcs_connectors.md)), and so does `VolumeReader`: Spark never opens a file
+  that was not selected ([spec](../../specs/volume_connectors.md)).
+- A client that the job gives a connector, such as the `client` of `S3Reader`, carries the
+  credentials, the region and the endpoint, separate from the configuration.
+- An SDK's default client, created when the job passes none, follows the SDK's own lookup of
+  credentials (environment variables, configuration files, instance metadata). The connector
+  neither reads nor configures that lookup, so the rule above, that a connector never reads
+  configuration files, environment variables or secret stores, holds for the connector's own
+  code. It covers `boto3.client("s3")` for `S3Reader`, `google.cloud.storage.Client(project=None)`
+  for `GcsReader`, which follows Application Default Credentials, `WorkspaceClient()` of the
+  Databricks SDK for `VolumeReader`, which follows the SDK's default authentication, and the
+  default clients of the other SDKs that later connectors use. A job that wants other
+  credentials builds the client itself and passes it.
 - A reader that filters inside the source cannot offer a free-form query, because a custom
   query cannot safely be bounded by a watermark.
 - Nothing here closes the door to streaming.

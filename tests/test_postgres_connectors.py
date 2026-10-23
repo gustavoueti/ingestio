@@ -54,6 +54,7 @@ BOUND = "2026-10-21 09:30:00.5+00"
 ORDERS = '"public"."orders"'
 QUALIFIED_STAGING = r'"public"\."ingestio_staging_[0-9a-f]{32}"'
 UNQUALIFIED_STAGING = r'"ingestio_staging_[0-9a-f]{32}"'
+ANY_EXTRA_MARKER = re.compile(r"""\bextra\s*==\s*["'][^"']+["']""")
 EXTRA_MARKER = re.compile(r"""\bextra\s*==\s*["']postgres["']""")
 
 
@@ -741,8 +742,11 @@ def test_at004_the_distribution_declares_the_postgres_extra_with_psycopg() -> No
     requirements: list[str] = metadata.get_all("Requires-Dist") or []
     assert requirements
     for requirement in requirements:
-        assert EXTRA_MARKER.search(requirement.partition(";")[2]), requirement
-    assert any(_project(requirement) == "psycopg" for requirement in requirements), requirements
+        assert ANY_EXTRA_MARKER.search(requirement.partition(";")[2]), requirement
+    assert any(
+        _project(requirement) == "psycopg" and EXTRA_MARKER.search(requirement.partition(";")[2])
+        for requirement in requirements
+    ), requirements
 
 
 # --- Connection settings ------------------------------------------------------------------

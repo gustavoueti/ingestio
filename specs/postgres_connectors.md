@@ -684,8 +684,9 @@ Unless a criterion says otherwise:
   `PostgresWriter needs psycopg: pip install 'ingestio[postgres]'`.
 - **AT-004**: Given the metadata of the installed distribution,
   `importlib.metadata.metadata("ingestio")`, then `postgres` is among its `Provides-Extra`
-  values, every `Requires-Dist` carries an `extra == "postgres"` marker, and one `Requires-Dist`
-  names the `psycopg` project.
+  values, every `Requires-Dist` carries an `extra == "<name>"` marker, and one `Requires-Dist`
+  names the `psycopg` project and carries `extra == "postgres"`. (Amended on 2026-10-23 so that
+  a second extra does not break it; see the History.)
 
 ### Connection settings
 
@@ -1111,3 +1112,4 @@ One entry per stage, recorded by the main session from the stage's report.
 | 2026-10-23 | documentation | documented | Re-run after the return. The doc-keeper confirmed that the documentation still matches the spec and the tests after the AT-032 `match=` fix; no change. |
 | 2026-10-23 | implementation | implemented | The implementer wrote `PostgresConnection`, `PostgresReader` and `PostgresWriter` in `src/ingestio/connector/postgres.py` and exported them from `connector/all.py`; pyspark and psycopg are imported lazily, and the writer follows the staging-table write with one transaction. Re-run after the return with no change to `src/`: 212 passed, 8 integration tests skipped, ruff and mypy pass. |
 | 2026-10-23 | validation | validated | The acceptance-validator passed all seven checks: AT-001 to AT-035 covered by 108 passing tests, full suite 212 passed with the 8 integration tests skipped, ruff, format, mypy strict and `uv lock --check` clean; docs, signatures, immutability, no logging and the dependency changes match the spec. Non-blocking findings for the maintainer: the apply connection is left open when its `COMMIT` fails (data unaffected; no criterion covers it), the `ingestio[spark]` example in the philosophy, the `dev` group description in CONTRIBUTING, pyspark checked only against 4.2, and an outdated README. The main session fixed a wording slip in `docs/concepts/connectors.md` (only the writer needs the extra). ADR 0013 accepted by the maintainer with the rationale filled in. |
+| 2026-10-23 | amendment | validated | AT-004 amended by the main session, under the maintainer's delegation of 2026-10-23, as question 8 of [specs/s3_connectors.md](s3_connectors.md) recommends: every `Requires-Dist` carries an `extra == "<name>"` marker, and the one naming psycopg carries `extra == "postgres"`. The old wording failed as soon as a second extra (`s3`) was added. The test-writer of `s3_connectors` updates `test_at004_...` in `tests/test_postgres_connectors.py` to match; nothing else in this spec changes. |

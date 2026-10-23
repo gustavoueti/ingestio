@@ -10,11 +10,22 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from collections.abc import Iterable, Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeAlias
+from typing import TYPE_CHECKING, Any
+
+from ingestio.connector._files import (
+    RESERVED_BOTH,
+    RESERVED_READER,
+    RESERVED_WRITER,
+    Options,
+    Watermark,
+    check_format,
+    check_options,
+    check_readable_format,
+    is_hidden,
+)
 
 if TYPE_CHECKING:
     from os import PathLike
@@ -24,13 +35,7 @@ if TYPE_CHECKING:
 
 __all__ = ["DiskReader", "DiskWriter", "JsonLinesWriter"]
 
-_Options: TypeAlias = Mapping[str, str | int | float | bool]
-
-_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
-_MICROSECOND = timedelta(microseconds=1)
-_RESERVED_BOTH = ("path", "paths")
-_RESERVED_READER = ("pathglobfilter", "recursivefilelookup", "modifiedbefore", "modifiedafter")
-_RESERVED_WRITER = ("replacewhere", "partitionoverwritemode")
+_MILLISECOND = 1000
 
 
 class JsonLinesWriter:
@@ -74,19 +79,6 @@ def _check_path(path: str | PathLike[str]) -> str:
     return str(normalised)
 
 
-def _check_format(format: str) -> None:  # noqa: A002 - the configuration key
-    if not format:
-        raise ValueError("format must not be empty")
-
-
-def _check_options(options: _Options | None, reserved: tuple[str, ...]) -> dict[str, Any]:
-    given = dict(options or {})
-    for key in given:
-        if key.lower() in reserved:
-            raise ValueError(f"option '{key}' is set by the connector")
-    return given
-
-
 class DiskReader:
     """Reads the files of a directory into a Spark DataFrame, in the format it is given.
 
@@ -116,36 +108,13 @@ class DiskReader:
         watermark_pattern: str | None = None,
         watermark_value: str | datetime | None = None,
         schema: StructType | str | None = None,
-        options: _Options | None = None,
+        options: Options | None = None,
         spark: SparkSession | None = None,
     ) -> None:
         self._path = _check_path(path)
-        _check_format(format)
-        if format.lower() == "delta":
-            raise ValueError(f"format '{format}' cannot be read file by file")
-        self._pattern: re.Pattern[str] | None = None
-        if watermark_pattern is not None:
-            try:
-                self._pattern = re.compile(watermark_pattern)
-            except re.error as exc:
-                raise ValueError(f"invalid watermark_pattern: {exc}") from exc
-            if self._pattern.groups != 1:
-                raise ValueError("watermark_pattern must have exactly one group")
-        self._text: str | None = None
-        self._millis: int | None = None
-        if watermark_value is not None:
-            if watermark_pattern is not None:
-                if not isinstance(watermark_value, str):
-                    raise ValueError("watermark_value must be a str with watermark_pattern")
-                self._text = watermark_value
-            else:
-                if not isinstance(watermark_value, datetime):
-                    raise ValueError("watermark_value must be a datetime without watermark_pattern")
-                if watermark_value.tzinfo is None or watermark_value.utcoffset() is None:
-                    raise ValueError("watermark_value must be timezone-aware")
-                micros = (watermark_value - _EPOCH) // _MICROSECOND
-                self._millis = micros // 1000
-        self._options = _check_options(options, _RESERVED_BOTH + _RESERVED_READER)
+        check_readable_format(format)
+        self._mark = Watermark.parse(watermark_pattern, watermark_value, _MILLISECOND)
+        self._options = check_options(options, RESERVED_BOTH + RESERVED_READER)
         self._format = format
         self._schema = schema
         self._spark = spark
@@ -173,28 +142,11 @@ class DiskReader:
     def _select(self) -> list[str]:
         with os.scandir(self._path) as entries:
             candidates = [
-                entry
+                (entry.name, entry.stat().st_mtime_ns // 1_000_000 if self._mark.needs_time else 0)
                 for entry in entries
-                if not entry.name.startswith(("_", "."))
-                and not entry.name.endswith("._COPYING_")
-                and entry.is_file()
+                if not is_hidden(entry.name) and entry.is_file()
             ]
-        selected: list[str] = []
-        for entry in candidates:
-            if self._pattern is not None:
-                match = self._pattern.fullmatch(entry.name)
-                if match is None:
-                    continue
-                mark = match.group(1)
-                if mark is None:
-                    continue
-                if self._text is not None and not mark > self._text:
-                    continue
-            elif self._millis is not None:
-                if entry.stat().st_mtime_ns // 1_000_000 <= self._millis:
-                    continue
-            selected.append(entry.name)
-        return sorted(selected)
+        return self._mark.select(candidates)
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(path={self._path!r}, format={self._format!r})"
@@ -216,12 +168,12 @@ class DiskWriter:
         path: str | PathLike[str],
         format: str,  # noqa: A002 - the configuration key
         *,
-        options: _Options | None = None,
+        options: Options | None = None,
     ) -> None:
         self._path = _check_path(path)
-        _check_format(format)
+        check_format(format)
         self._format = format
-        self._options = _check_options(options, _RESERVED_BOTH + _RESERVED_WRITER)
+        self._options = check_options(options, RESERVED_BOTH + RESERVED_WRITER)
 
     def write(self, data: DataFrame, *, replace: bool = False) -> None:
         """Write every row of `data` as files in the directory.
