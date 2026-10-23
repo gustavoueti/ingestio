@@ -19,6 +19,11 @@ classifiers = [
 # Engine dependencies, when they arrive, go in extras: the core stays installable anywhere.
 dependencies = []
 
+# One extra per integrated system. Engines the runtime provides, such as pyspark on Databricks,
+# are prerequisites, never dependencies: pip-installing pyspark over a runtime breaks it.
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2"]
+
 [project.urls]
 Repository = "https://github.com/gustavoueti/ingestio"
 
@@ -31,6 +36,10 @@ dev = [
     "ruff>=0.9",
     "mypy>=1.13",
     "pre-commit>=4.0",
+    # The packages of every extra, plus the engines they assume, so that the whole suite and
+    # mypy run after `uv sync`.
+    "psycopg[binary]>=3.2",
+    "pyspark>=3.5",
 ]
 
 [build-system]
