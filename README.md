@@ -15,7 +15,8 @@ your processing is batch. Those are things you build with it, not things it impo
 pip install ingestio
 ```
 
-No runtime dependencies.
+No runtime dependencies. An integration that needs one is an optional extra, such as
+`pip install 'ingestio[postgres]'`.
 
 ## The idea
 
@@ -31,8 +32,9 @@ Steps run in list order, and callbacks inside a step run in list order. There is
 priority attribute and no hidden reordering: the sequence you write is the sequence that
 runs.
 
-The library ships the engine, one reader, one writer and two generic callbacks. The stages
-that are specific to your ingestion are yours to write — that is the point.
+The library ships the engine, a few connectors (a JSON API reader, a JSON Lines writer, a
+PostgreSQL reader and writer) and two generic callbacks. The stages that are specific to your
+ingestion are yours to write — that is the point.
 
 ## Design philosophy
 
@@ -169,6 +171,110 @@ log_to_console()  # stderr, colored on a terminal; NO_COLOR turns color off
 It touches only the `ingestio` logger. A notebook is not a terminal: pass `color=True` when it
 renders ANSI colors. The full format is in
 [docs/concepts/lifecycle.md](docs/concepts/lifecycle.md#logging).
+
+## Structuring a job
+
+ingestio does not impose a layout on a job. A suggested minimum is two files:
+
+```text
+orders_job/
+├── config.json   the job's parameters
+└── main.py       reads them, builds the process and runs it
+```
+
+`config.json` holds the parameters of the ingestion. The library never reads it: `main.py`
+does, and passes the values to the constructors of ingestio. Credentials never go in it.
+
+```json
+{
+  "table_name": "public.orders",
+  "primary_key": "id",
+  "watermark_column": "updated_at"
+}
+```
+
+`main.py` imports ingestio, places the callbacks the library ships, defines the job's own and
+runs the process. This one copies the orders changed since the last run from the shop's
+database into the warehouse:
+
+```python
+import json
+import os
+from datetime import datetime
+from pathlib import Path
+
+from ingestio import (
+    Callback,
+    CancelProcessException,
+    Process,
+    ReadSource,
+    Step,
+    WriteTarget,
+    log_to_console,
+)
+from ingestio.connector.all import PostgresConnection, PostgresReader, PostgresWriter
+
+config = json.loads(Path(__file__).with_name("config.json").read_text(encoding="utf-8"))
+
+# Credentials come from the environment; on Databricks, from dbutils.secrets.get.
+shop = PostgresConnection(
+    "pg.internal", "shop", os.environ["SHOP_USER"], os.environ["SHOP_PASSWORD"]
+)
+warehouse = PostgresConnection(
+    "dw.internal", "warehouse", os.environ["DW_USER"], os.environ["DW_PASSWORD"]
+)
+
+
+def last_watermark() -> datetime | None:
+    """The highest `updated_at` already loaded, timezone-aware. None reads every row.
+
+    Yours to write: query the warehouse, read a control table, ...
+    """
+    return None
+
+
+class SkipEmptyBatch(Callback):
+    """The job's own stage: stop cleanly when nothing changed since the last run."""
+
+    def run(self) -> None:
+        if self.process.state["records"].isEmpty():
+            raise CancelProcessException("no new orders")
+
+
+log_to_console()
+Process([
+    Step("extract", [
+        ReadSource(PostgresReader(
+            config["table_name"],
+            shop,
+            watermark_column=config["watermark_column"],
+            watermark_value=last_watermark(),
+        )),
+    ]),
+    Step("load", [
+        SkipEmptyBatch(),
+        WriteTarget(PostgresWriter(config["table_name"], warehouse)),
+    ]),
+]).run()
+```
+
+- `ReadSource` and `WriteTarget` ship with the library; `last_watermark` and `SkipEmptyBatch`
+  belong to the job. `WriteTarget` appends. A job that replaces the target writes a callback
+  of its own that calls `write(df, replace=True)`.
+- `primary_key` is in the configuration but not in the code. A connector takes only the
+  parameters it uses, and neither PostgreSQL connector uses it
+  ([ADR 0013](docs/decisions/0013-connector-configuration-convention.md)); it is there for the
+  job's callbacks that do, such as a merge.
+- The writer gets `config["table_name"]` because the warehouse keeps the table's name. A job
+  whose target has another name passes that name to the writer.
+
+These two files are the whole job, and they run anywhere: in a container, as a Databricks job,
+on a laptop. The connectors built on Spark, such as the PostgreSQL ones, expect a Spark session
+to be running already, and never start one. Databricks provides it; elsewhere, create it before
+the process runs, for example with `SparkSession.builder.getOrCreate()`. The rest of the
+library is plain Python. The PostgreSQL writer also needs the `postgres` extra; each
+environment's requirements are in
+[docs/concepts/connectors.md](docs/concepts/connectors.md#supported-environments).
 
 ## Roadmap
 
