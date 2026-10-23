@@ -12,6 +12,7 @@ from ingestio.basics import (
     Step,
     Writer,
     WriteTarget,
+    log_to_console,
 )
 
 __version__ = "0.0.1"
@@ -29,4 +30,5 @@ __all__ = [
     "WriteTarget",
     "Writer",
     "__version__",
+    "log_to_console",
 ]
