@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.2.0 (2026-10-23)
+
+### Features
+
+- **connector**: Add S3, GCS, Databricks volume, Unity Catalog and BigQuery connectors
+  ([#9](https://github.com/gustavoueti/ingestio/pull/9),
+  [`7ee3fd6`](https://github.com/gustavoueti/ingestio/commit/7ee3fd67e443a9c1ee65a3be488363860a84273e))
+
+
 ## v0.1.0 (2026-10-23)
 
 ### Continuous Integration
