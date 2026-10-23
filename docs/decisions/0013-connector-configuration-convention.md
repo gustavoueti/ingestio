@@ -54,6 +54,14 @@ own configuration and its own secrets.
   `PostgresWriter` it names the target. This is recorded here and not resolved: a job that
   writes to a table other than its source must not pass the configuration's `table_name` to the
   writer.
+- `DiskWriter` has the same consequence: its `path` names the target, as `table_name` does on
+  `PostgresWriter`, while in the job configuration `path` is the source directory. A job that
+  writes somewhere other than where it reads must not pass the configuration's `path` to the
+  writer.
+- For a file system, the unit a reader can filter is the file. `DiskReader` filters inside the
+  source by selecting the files above the watermark before Spark loads anything, so Spark
+  never opens a file that was not selected
+  ([spec](../../specs/disk_connectors.md)).
 - A reader that filters inside the source cannot offer a free-form query, because a custom
   query cannot safely be bounded by a watermark.
 - Nothing here closes the door to streaming.

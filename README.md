@@ -32,9 +32,9 @@ Steps run in list order, and callbacks inside a step run in list order. There is
 priority attribute and no hidden reordering: the sequence you write is the sequence that
 runs.
 
-The library ships the engine, a few connectors (a JSON API reader, a JSON Lines writer, a
-PostgreSQL reader and writer) and two generic callbacks. The stages that are specific to your
-ingestion are yours to write — that is the point.
+The library ships the engine, a few connectors (a JSON API reader, a JSON Lines writer, readers
+and writers for PostgreSQL and for files on disk) and two generic callbacks. The stages that
+are specific to your ingestion are yours to write — that is the point.
 
 ## Design philosophy
 
@@ -269,12 +269,11 @@ Process([
   whose target has another name passes that name to the writer.
 
 These two files are the whole job, and they run anywhere: in a container, as a Databricks job,
-on a laptop. The connectors built on Spark, such as the PostgreSQL ones, expect a Spark session
-to be running already, and never start one. Databricks provides it; elsewhere, create it before
-the process runs, for example with `SparkSession.builder.getOrCreate()`. The rest of the
-library is plain Python. The PostgreSQL writer also needs the `postgres` extra; each
-environment's requirements are in
-[docs/concepts/connectors.md](docs/concepts/connectors.md#supported-environments).
+on a laptop. The connectors built on Spark, such as the PostgreSQL and disk ones, expect a Spark
+session to be running already, and never start one. Databricks provides it; elsewhere, create
+it before the process runs, for example with `SparkSession.builder.getOrCreate()`. The rest of
+the library is plain Python. The PostgreSQL writer also needs the `postgres` extra; the
+requirements of each connector are in [docs/concepts/connectors.md](docs/concepts/connectors.md).
 
 ## Roadmap
 
