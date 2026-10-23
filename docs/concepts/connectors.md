@@ -38,47 +38,65 @@ class Writer(Protocol[T_contra]):
 - A connector that can read has a `read()` method; one that can write has `write(data)`; one
   that can do both has both.
 - Protocols are structural: a class is a connector because it has the method, not because it
-  inherits from anything. There is no base class and no registry.
+  inherits from anything. There is no base class.
 - The payload type is unconstrained. A reader may return a list of records, a generator, a
   DataFrame or bytes.
 
-`Reader` and `Writer` are exported by `ingestio` and by `ingestio.connector.all`, for type
-annotations.
+`Reader` and `Writer` are exported by `ingestio` and by `ingestio.connector.all`. They are the
+contract that every connector the library ships satisfies, and serve the annotations of a job's own
+callbacks that use one.
+
+The library ships every connector. Users do not extend connectors: a system the library does not
+integrate gets a connector contributed to the library, or a feature request
+([ADR 0015](../decisions/0015-choose-connectors-from-the-job-configuration.md)).
 
 ## Using a connector
 
-A connector is injected into the callback that needs it, so a single callback may combine
-several. The library ships two callbacks that move data between a connector and the
-[shared state](callbacks.md#sharing-data): `ReadSource` and `WriteTarget`.
+The library's callbacks that move data between a connector and the [shared
+state](callbacks.md#sharing-data), `ReadSource` and `WriteTarget`, build the connector themselves.
+The job names the system in its configuration file, and each callback takes the path of that file:
+
+```json
+{
+  "source": {"system": "unity_catalog", "table_name": "main.bronze.orders"},
+  "target": {"system": "json_lines", "path": "volume/orders.jsonl"}
+}
+```
+
+Every key of a section is a constructor argument of the connector the system builds, named as in
+the sections below, and credentials, clients and the watermark are arguments of the callback.
+[Configuration](configuration.md) has the systems, the keys, the callback arguments and the
+errors. Each connector section below says which `system` name and keys reach it.
+
+A job's own callback can still build a shipped connector itself, for a strategy that the library's
+callbacks do not offer. `Writer` annotates what it holds:
 
 ```python
 from pathlib import Path
 from typing import Any
 
-from ingestio import Process, ReadSource, Step, WriteTarget
+from ingestio import Callback, Process, Step, Writer
 from ingestio.connector.all import JsonLinesWriter
 
 
-class StaticReader:
-    """A connector that reads records held in memory."""
+class WriteOnce(Callback):
+    """The job's own callback: writes a value of the state with the writer it was given."""
 
-    def __init__(self, records: list[dict[str, Any]]) -> None:
-        self.records = records
+    def __init__(self, writer: Writer[list[dict[str, Any]]], key: str = "records") -> None:
+        self.writer = writer
+        self.key = key
 
-    def read(self) -> list[dict[str, Any]]:
-        return self.records
+    def run(self) -> None:
+        self.writer.write(self.process.state[self.key])
 
 
-Process([
-    Step("extract", [ReadSource(StaticReader([{"id": 1}, {"id": 2}]))]),
-    Step("load", [WriteTarget(JsonLinesWriter("volume/orders.jsonl"))]),
-]).run()
+Process(
+    [Step("load", [WriteOnce(JsonLinesWriter("volume/orders.jsonl"))])],
+    state={"records": [{"id": 1}, {"id": 2}]},
+).run()
 
 print(Path("volume/orders.jsonl").read_text(encoding="utf-8"))
 ```
-
-`StaticReader` is a complete connector: it satisfies `Reader[Any]` for the type checker
-without importing anything from ingestio.
 
 ## Connectors shipped with the library
 
@@ -87,6 +105,9 @@ without importing anything from ingestio.
 `ingestio.connector.all.JsonApiReader(url, *, timeout=30.0, headers=None, encoding="utf-8")`
 
 Fetches a JSON endpoint and returns the decoded payload.
+
+In a configuration: `"system": "json_api"` in the `source` section, with the keys `url` (required),
+`timeout`, `headers` and `encoding`. It takes no callback argument.
 
 - Built on `urllib`, so it adds no dependency.
 - Accepts only `http` and `https` URLs; any other scheme raises `ValueError` when the reader
@@ -110,6 +131,11 @@ orders = JsonApiReader("https://api.example.com/v1/orders", timeout=10).read()
 
 Writes records as newline-delimited JSON, one object per line.
 
+In a configuration: `"system": "json_lines"` in the `target` section, with the keys `path`
+(required) and `encoding`. `append` is not a key: `WriteTarget` builds the writer with
+`append=True`, or with `append=False` when it is given `replace=True`. It takes no callback
+argument.
+
 - Creates missing parent directories.
 - Replaces the file on each write, or appends to it with `append=True`.
 - Serialises values JSON does not know, such as datetimes, with `str`.
@@ -129,17 +155,25 @@ the writer also needs the [`postgres` extra](#extras). See [Supported
 environments](#supported-environments).
 
 `PostgresReader` satisfies `Reader[DataFrame]` and `PostgresWriter` satisfies
-`Writer[DataFrame]`, structurally, so `ReadSource` and `WriteTarget` use them unchanged.
+`Writer[DataFrame]`, structurally.
+
+In a configuration: `"system": "postgres"`, in the `source` section with the keys `table_name`
+(required), `watermark_column` and `options`, and in the `target` section with `table_name`
+(required) and `options`. `ReadSource` and `WriteTarget` both need the argument `connection`, a
+`PostgresConnection` that the job builds; `ReadSource` also takes `watermark_value` and `spark`.
+The host, the database and the credentials are never keys.
 
 #### How a connector receives an ingestion's parameters
 
 The parameters of one ingestion (the source table, the watermark column) come from the job's
-configuration, which the library does not read or parse. A connector takes them as constructor
-arguments named after the configuration keys (`table_name`, `watermark_column`), and has no
-`from_config`. Credentials are separate arguments, held by `PostgresConnection`, and never live
-in the configuration: on Databricks they come from `dbutils.secrets.get`, which the library
-never imports. A reader extracts only the rows the job needs, and filters inside the source.
-See [ADR 0013](../decisions/0013-connector-configuration-convention.md).
+configuration. A connector never reads it: the library's read and write callbacks read the file
+and hand the keys of a section to the connector as constructor arguments named after them
+(`table_name`, `watermark_column`). A connector has no `from_config`. Credentials are separate
+arguments, held by `PostgresConnection`, and never live in the configuration: they reach the
+callback as its `connection` argument, and on Databricks come from `dbutils.secrets.get`, which
+the library never imports. A reader extracts only the rows the job needs, and filters inside the
+source. See [ADR 0013](../decisions/0013-connector-configuration-convention.md) and
+[ADR 0015](../decisions/0015-choose-connectors-from-the-job-configuration.md).
 
 #### `PostgresConnection`
 
@@ -291,7 +325,8 @@ building a `PostgresWriter` without it raises
   the same transaction, so the target ends up holding exactly the rows of `data`.
 - The calling callback chooses at call time, by passing `replace`. The connector's
   configuration has no mode and there is no `replace()` method. Anything built on top, such as
-  a merge, belongs to callbacks. `WriteTarget` calls `write(data)`, so it always appends.
+  a merge, belongs to callbacks. `WriteTarget` calls `write(data)`, which appends, unless it is
+  given `replace=True`.
 - `options` holds Spark JDBC write options passed through, such as `numPartitions` or
   `batchsize`. The writer sets `stringtype` to `unspecified`, which lets Spark strings go into
   `uuid`, `jsonb` and enum columns, and `reWriteBatchedInserts` to `true`, which makes batched
@@ -363,50 +398,41 @@ except ValueError as error:
     print(error)
 ```
 
-A job on Databricks: the configuration and the secrets stay in the job, and the callback that
-loads chooses to replace.
+A job on Databricks: the file names the tables, the secrets stay in the job, and the loading
+callback chooses to replace. `/Workspace/jobs/orders.json`:
+
+```json
+{
+  "source": {"system": "postgres", "table_name": "public.orders", "watermark_column": "updated_at"},
+  "target": {"system": "postgres", "table_name": "public.orders_copy"}
+}
+```
 
 <!-- example: skip -->
 ```python
-import json
-from pathlib import Path
+from ingestio import Process, ReadSource, Step, WriteTarget
+from ingestio.connector.all import PostgresConnection
 
-from ingestio import Callback, Process, ReadSource, Step
-from ingestio.connector.all import PostgresConnection, PostgresReader, PostgresWriter
+CONFIG = "/Workspace/jobs/orders.json"
 
-config = json.loads(Path("/Workspace/jobs/orders.json").read_text())
-# {"table_name": "public.orders", "primary_key": "id", "watermark_column": "updated_at", ...}
-
-source = PostgresConnection(
+shop = PostgresConnection(
     "pg.internal",
     "shop",
     dbutils.secrets.get("pg", "user"),
     dbutils.secrets.get("pg", "password"),
     sslmode="require",
 )
-reader = PostgresReader(
-    config["table_name"],
-    source,
-    watermark_column=config["watermark_column"],
-    watermark_value=last_watermark,  # computed by the job: from the target, a control table...
-)
-
-
-class ReplaceTarget(Callback):
-    """A full load: the pipeline's choice, made in a callback."""
-
-    def __init__(self, writer: PostgresWriter, key: str) -> None:
-        self.writer = writer
-        self.key = key
-
-    def run(self) -> None:
-        df = self.process.state[self.key]
-        self.writer.write(df, replace=True)
-
 
 Process([
-    Step("extract", [ReadSource(reader, into="orders")]),
-    Step("load", [ReplaceTarget(PostgresWriter("public.orders_copy", source), "orders")]),
+    Step("extract", [
+        ReadSource(
+            CONFIG,
+            into="orders",
+            connection=shop,
+            watermark_value=last_watermark,  # computed by the job: from the target, a control table...
+        )
+    ]),
+    Step("load", [WriteTarget(CONFIG, key="orders", replace=True, connection=shop)]),
 ]).run()
 ```
 
@@ -463,7 +489,10 @@ These two classes are exported by `ingestio.connector.all` only, not by `ingesti
 write Delta tables registered in a Spark catalog, such as Databricks Unity Catalog, named by
 their three-part name `catalog.schema.table`. `UnityCatalogReader` returns a
 `pyspark.sql.DataFrame` and `UnityCatalogWriter` receives one, so they satisfy `Reader[DataFrame]`
-and `Writer[DataFrame]`, structurally, and `ReadSource` and `WriteTarget` use them unchanged. They
+and `Writer[DataFrame]`, structurally. In a configuration, `"system": "unity_catalog"` in the
+`source` section takes the keys `table_name` (required), `watermark_column` and `options`, and in
+the `target` section `table_name` (required) and `options`; `ReadSource` also takes
+`watermark_value` and `spark`, and no callback argument is required. They
 follow the [PostgreSQL connectors](#postgresql-postgresconnection-postgresreader-postgreswriter):
 a table is read incrementally by a watermark with a frozen upper bound, and an ingestion's
 parameters are [constructor arguments](#how-a-connector-receives-an-ingestions-parameters).
@@ -648,7 +677,7 @@ data.write.format("delta").options(<options>).mode(<mode>).saveAsTable(<quoted t
 ```
 
 - `write(data)` appends: it adds every row of `data` to the table and leaves the existing rows as
-  they are. `WriteTarget` calls `write(data)`, so it always appends.
+  they are. `WriteTarget` calls `write(data)`, which appends, unless it is given `replace=True`.
 - `write(data, replace=True)` replaces: the table ends up holding exactly the rows of `data`. The
   writer adds the option `partitionOverwriteMode` = `static`, so this holds on a partitioned table
   too, even when the session sets `spark.sql.sources.partitionOverwriteMode` to `dynamic`, which
@@ -764,31 +793,34 @@ for build in (
         print(error)
 ```
 
-A job on Databricks: the configuration and the watermark stay in the job, and the next watermark
-is taken from the DataFrame that was read. The loading callback appends, as `WriteTarget` does.
+A job on Databricks: the tables are in the configuration, the watermark stays in the job, and the
+next watermark is taken from the DataFrame that was read. `WriteTarget` appends.
+`/Workspace/jobs/orders.json`:
+
+```json
+{
+  "source": {"system": "unity_catalog", "table_name": "main.bronze.orders", "watermark_column": "updated_at"},
+  "target": {"system": "unity_catalog", "table_name": "main.silver.orders"}
+}
+```
 
 <!-- example: skip -->
 ```python
-import json
-from pathlib import Path
-
 from pyspark.sql import functions as F
 
 from ingestio import Process, ReadSource, Step, WriteTarget
-from ingestio.connector.all import UnityCatalogReader, UnityCatalogWriter
 
-config = json.loads(Path("/Workspace/jobs/orders.json").read_text())
-# {"table_name": "main.bronze.orders", "watermark_column": "updated_at", ...}
-
-reader = UnityCatalogReader(
-    config["table_name"],
-    watermark_column=config["watermark_column"],
-    watermark_value=last_watermark,  # kept by the job: a str with its offset, see below
-)
+CONFIG = "/Workspace/jobs/orders.json"
 
 process = Process([
-    Step("extract", [ReadSource(reader, into="orders")]),
-    Step("load", [WriteTarget(UnityCatalogWriter("main.silver.orders"), key="orders")]),
+    Step("extract", [
+        ReadSource(
+            CONFIG,
+            into="orders",
+            watermark_value=last_watermark,  # kept by the job: a str with its offset, see below
+        )
+    ]),
+    Step("load", [WriteTarget(CONFIG, key="orders")]),
 ]).run()
 
 # The bound is not exposed: the job takes its next watermark from the DataFrame. Rendering it
@@ -882,8 +914,12 @@ These two classes are exported by `ingestio.connector.all` only, not by `ingesti
 write Google BigQuery tables, named by `project.dataset.table`, through Spark's BigQuery data
 source (spark-bigquery-connector): the data moves between BigQuery and the Spark executors.
 `BigQueryReader` returns a `pyspark.sql.DataFrame` and `BigQueryWriter` receives one, so they
-satisfy `Reader[DataFrame]` and `Writer[DataFrame]`, structurally, and `ReadSource` and
-`WriteTarget` use them unchanged. They follow the [PostgreSQL
+satisfy `Reader[DataFrame]` and `Writer[DataFrame]`, structurally. In a configuration,
+`"system": "bigquery"` in the `source` section takes the keys `table_name` (required),
+`watermark_column`, `billing_project` and `options`, and in the `target` section `table_name`
+(required), `billing_project` and `options`. The callbacks take the optional argument `client`, a
+`google.cloud.bigquery.Client`; `ReadSource` also takes `watermark_value` and `spark`. They follow
+the [PostgreSQL
 connectors](#postgresql-postgresconnection-postgresreader-postgreswriter) and the [Unity Catalog
 connectors](#unity-catalog-unitycatalogreader-unitycatalogwriter): a table is read incrementally
 by a watermark with a frozen upper bound, a write is atomic through a staging table, and an
@@ -1091,7 +1127,7 @@ Writes a Spark DataFrame into a BigQuery table that already exists, atomically.
 The writer takes no session: it uses `data.write`.
 
 - `write(data)` appends: it inserts every row of `data` into the target and leaves the existing
-  rows alone. `WriteTarget` calls `write(data)`, so it always appends.
+  rows alone. `WriteTarget` calls `write(data)`, which appends, unless it is given `replace=True`.
 - `write(data, replace=True)` replaces: in one statement it deletes every row of the target and
   inserts every row of `data`, so the target ends up holding exactly the rows of `data`. On a
   partitioned table this is every partition, not only those `data` touches. The target's
@@ -1248,51 +1284,58 @@ for build in (
         print(error)
 ```
 
-A job on Databricks: the configuration and the watermark stay in the job, the credentials come from
-the cluster's environment, and one callback chooses to replace.
+A job on Databricks: the tables are in the configuration, the watermark stays in the job, the
+credentials come from the cluster's environment, and the second callback chooses to replace. Two
+targets use two files, one target per file. `/Workspace/jobs/orders.json`:
+
+```json
+{
+  "source": {
+    "system": "bigquery",
+    "table_name": "acme-data.sales.orders",
+    "watermark_column": "updated_at",
+    "billing_project": "acme-billing"
+  },
+  "target": {
+    "system": "bigquery",
+    "table_name": "acme-data.lake.orders",
+    "billing_project": "acme-billing"
+  }
+}
+```
+
+and `/Workspace/jobs/orders_snapshot.json`:
+
+```json
+{
+  "target": {"system": "bigquery", "table_name": "acme-data.mart.orders_snapshot"}
+}
+```
 
 <!-- example: skip -->
 ```python
-import json
-from pathlib import Path
+from ingestio import Process, ReadSource, Step, WriteTarget
 
-from ingestio import Callback, Process, ReadSource, Step, WriteTarget
-from ingestio.connector.all import BigQueryReader, BigQueryWriter
-
-config = json.loads(Path("/Workspace/jobs/orders.json").read_text())
-# {"table_name": "acme-data.sales.orders", "watermark_column": "updated_at", ...}
-
-reader = BigQueryReader(
-    config["table_name"],
-    watermark_column=config["watermark_column"],
-    watermark_value=last_watermark,  # an aware datetime, kept by the job
-    billing_project="acme-billing",
-)
-
-
-class ReplaceTarget(Callback):
-    """A full load: the pipeline's choice, made in a callback."""
-
-    def __init__(self, writer: BigQueryWriter, key: str) -> None:
-        self.writer = writer
-        self.key = key
-
-    def run(self) -> None:
-        self.writer.write(self.process.state[self.key], replace=True)
-
+CONFIG = "/Workspace/jobs/orders.json"
+SNAPSHOT = "/Workspace/jobs/orders_snapshot.json"
 
 Process([
-    Step("extract", [ReadSource(reader, into="orders")]),
+    Step("extract", [
+        ReadSource(
+            CONFIG,
+            into="orders",
+            watermark_value=last_watermark,  # an aware datetime, kept by the job
+        )
+    ]),
     Step("load", [
-        WriteTarget(BigQueryWriter("acme-data.lake.orders", billing_project="acme-billing"),
-                    key="orders"),
-        ReplaceTarget(BigQueryWriter("acme-data.mart.orders_snapshot"), "orders"),
+        WriteTarget(CONFIG, key="orders"),
+        WriteTarget(SNAPSHOT, key="orders", replace=True),
     ]),
 ]).run()
 ```
 
 A job that does not run with the right default credentials builds its own client and passes it:
-`BigQueryReader(..., client=bigquery.Client.from_service_account_info(info))`. Spark then needs the
+`ReadSource(CONFIG, client=bigquery.Client.from_service_account_info(info))`. Spark then needs the
 same identity from its own environment: the client and Spark each find the environment's
 credentials on their own.
 
@@ -1399,12 +1442,17 @@ These two classes are exported by `ingestio.connector.all` only, not by `ingesti
 and write files in a directory on disk, such as a Unity Catalog volume, through Spark's file
 data sources: the reader returns a `pyspark.sql.DataFrame` and the writer receives one.
 `DiskReader` satisfies `Reader[DataFrame]` and `DiskWriter` satisfies `Writer[DataFrame]`,
-structurally, so `ReadSource` and `WriteTarget` use them unchanged. They add no dependency and
+structurally. They add no dependency and
 no extra: pyspark is a prerequisite that the runtime provides, imported only when it is needed.
 They follow the [convention for an ingestion's
 parameters](#how-a-connector-receives-an-ingestions-parameters): `path`, `format`,
 `watermark_pattern` and `schema` are arguments named after configuration keys, and the job
 computes `watermark_value`.
+
+In a configuration: `"system": "disk"`, in the `source` section with the keys `path` and `format`
+(required), `watermark_pattern`, `schema` and `options`, and in the `target` section with `path`
+and `format` (required) and `options`. `ReadSource` also takes `watermark_value` and `spark`; no
+callback argument is required. `schema` is a DDL string there.
 
 The job gives the format on both sides. The connectors never choose one, never infer it from
 file extensions and transform nothing: they add no column, cast nothing and filter no rows.
@@ -1433,7 +1481,8 @@ DiskReader.read() -> DataFrame
   last-modified time.
 - `watermark_value`: the last watermark already ingested. Only files above it are read. A `str`
   with `watermark_pattern`, a timezone-aware `datetime` without it.
-- `schema`: a `StructType` or a DDL string. Spark infers it when omitted.
+- `schema`: a `StructType` or a DDL string. Spark infers it when omitted. Through `ReadSource`,
+  the `schema` key is a DDL string.
 - `options`: Spark data source options passed through, such as `header`.
 - `spark`: the session to read with. The active session when omitted.
 
@@ -1526,8 +1575,8 @@ Writes a Spark DataFrame as files in a directory, in the format it is given: one
   not write included, and then writes the new files. With Delta, the overwrite is a new version
   of the table.
 - The calling callback chooses at call time, by passing `replace`. The configuration has no
-  mode and there is no `replace()` method. `WriteTarget` calls `write(data)`, so it always
-  appends. Merges and deduplication belong to callbacks.
+  mode and there is no `replace()` method. `WriteTarget` calls `write(data)`, which appends,
+  unless it is given `replace=True`. Merges and deduplication belong to callbacks.
 - Spark creates `path`, and its missing parents, when they do not exist. The writer itself
   creates, lists and deletes nothing, and does not retry.
 - The file names are Spark's (`part-<n>-<uuid>-c000...`), so a `DiskReader` that reads them
@@ -1633,35 +1682,41 @@ except ValueError as error:
     print(error)
 ```
 
-A job on Databricks: the configuration and the watermark stay in the job, and the next
-watermark is taken from the files that were read.
+A job on Databricks: the files and the target are in the configuration, the watermark stays in the
+job, and the next watermark is taken from the files that were read.
+`/Workspace/jobs/orders_files.json`:
+
+```json
+{
+  "source": {
+    "system": "disk",
+    "path": "/Volumes/main/landing/orders",
+    "format": "csv",
+    "watermark_pattern": "orders_(\\d{8})\\.csv",
+    "schema": "id INT, amount DECIMAL(10,2), updated_at TIMESTAMP",
+    "options": {"header": true}
+  },
+  "target": {"system": "disk", "path": "/Volumes/main/lake/orders", "format": "parquet"}
+}
+```
 
 <!-- example: skip -->
 ```python
-import json
-from pathlib import Path
-
 from pyspark.sql import functions as F
 
 from ingestio import Process, ReadSource, Step, WriteTarget
-from ingestio.connector.all import DiskReader, DiskWriter
 
-config = json.loads(Path("/Workspace/jobs/orders_files.json").read_text())
-# {"path": "/Volumes/main/landing/orders", "format": "csv",
-#  "watermark_pattern": "orders_(\\d{8})\\.csv", ...}
-
-reader = DiskReader(
-    config["path"],
-    config["format"],
-    watermark_pattern=config["watermark_pattern"],
-    watermark_value=last_watermark,  # "20261020", kept by the job
-    schema="id INT, amount DECIMAL(10,2), updated_at TIMESTAMP",
-    options={"header": True},
-)
+CONFIG = "/Workspace/jobs/orders_files.json"
 
 process = Process([
-    Step("extract", [ReadSource(reader, into="orders")]),
-    Step("load", [WriteTarget(DiskWriter("/Volumes/main/lake/orders", "parquet"), key="orders")]),
+    Step("extract", [
+        ReadSource(
+            CONFIG,
+            into="orders",
+            watermark_value=last_watermark,  # "20261020", kept by the job
+        )
+    ]),
+    Step("load", [WriteTarget(CONFIG, key="orders")]),
 ]).run()
 
 # The selection is not exposed: the job takes its next watermark from the DataFrame.
@@ -1751,11 +1806,15 @@ These two classes are exported by `ingestio.connector.all` only, not by `ingesti
 and write objects in Amazon S3 and in S3-compatible stores, through Spark's file data sources,
 with the contract of the [disk connectors](#disk-diskreader-diskwriter): the reader returns a
 `pyspark.sql.DataFrame` and the writer receives one. `S3Reader` satisfies `Reader[DataFrame]` and
-`S3Writer` satisfies `Writer[DataFrame]`, structurally, so `ReadSource` and `WriteTarget` use
-them unchanged. The arguments follow the [convention for an ingestion's
-parameters](#how-a-connector-receives-an-ingestions-parameters): `path`, `format`,
+`S3Writer` satisfies `Writer[DataFrame]`, structurally. The arguments follow the [convention for an
+ingestion's parameters](#how-a-connector-receives-an-ingestions-parameters): `path`, `format`,
 `watermark_pattern` and `schema` are named after configuration keys, and the job computes
 `watermark_value`.
+
+In a configuration: `"system": "s3"`, in the `source` section with the keys `path` and `format`
+(required), `watermark_pattern`, `schema` (a DDL string) and `options`, and in the `target` section
+with `path` and `format` (required) and `options`. `ReadSource` also takes `watermark_value`,
+`spark` and the optional argument `client`, a boto3 S3 client; without it the `s3` extra is needed.
 
 The reader lists the objects directly under a prefix with boto3, on the driver, selects those
 above the job's watermark before anything is loaded, and has Spark load exactly those objects.
@@ -1912,8 +1971,8 @@ creates and deletes nothing itself.
   write included, and then writes the new ones. With Delta, the overwrite is a new version of
   the table.
 - The calling callback chooses at call time, by passing `replace`. The configuration has no
-  mode and there is no `replace()` method. `WriteTarget` calls `write(data)`, so it always
-  appends.
+  mode and there is no `replace()` method. `WriteTarget` calls `write(data)`, which appends,
+  unless it is given `replace=True`.
 - The object names are Spark's (`part-<n>-<uuid>-c000...`), so an `S3Reader` that reads them
   back takes their watermark from their `LastModified`. Spark may also leave directory markers
   and `_SUCCESS`, which the reader ignores.
@@ -1995,42 +2054,49 @@ except ValueError as error:
     print(error)
 ```
 
-A job on Databricks: the configuration, the credentials and the watermark stay in the job, and
-the next watermark is taken from the objects that were read. `unix_seconds` truncates to the
-second, as the reader does.
+A job on Databricks: the systems are in the configuration, the credentials and the watermark stay
+in the job, and the next watermark is taken from the objects that were read. `unix_seconds`
+truncates to the second, as the reader does. `/Workspace/jobs/orders_s3.json`:
+
+```json
+{
+  "source": {
+    "system": "s3",
+    "path": "s3://acme-landing/orders",
+    "format": "json",
+    "schema": "id INT, amount DECIMAL(10,2), updated_at TIMESTAMP"
+  },
+  "target": {"system": "s3", "path": "s3://acme-lake/orders", "format": "delta"}
+}
+```
 
 <!-- example: skip -->
 ```python
-import json
 from datetime import UTC, datetime
-from pathlib import Path
 
 import boto3
 from pyspark.sql import functions as F
 
 from ingestio import Process, ReadSource, Step, WriteTarget
-from ingestio.connector.all import S3Reader, S3Writer
 
-config = json.loads(Path("/Workspace/jobs/orders_s3.json").read_text())
-# {"path": "s3://acme-landing/orders", "format": "json", ...}
-
-reader = S3Reader(
-    config["path"],
-    config["format"],
-    watermark_value=last_watermark,  # an aware datetime, kept by the job
-    schema="id INT, amount DECIMAL(10,2), updated_at TIMESTAMP",
-    # Optional: without it, each read creates boto3.client("s3").
-    client=boto3.client(
-        "s3",
-        region_name="eu-west-1",
-        aws_access_key_id=dbutils.secrets.get("aws", "key_id"),
-        aws_secret_access_key=dbutils.secrets.get("aws", "secret"),
-    ),
-)
+CONFIG = "/Workspace/jobs/orders_s3.json"
 
 process = Process([
-    Step("extract", [ReadSource(reader, into="orders")]),
-    Step("load", [WriteTarget(S3Writer("s3://acme-lake/orders", "delta"), key="orders")]),
+    Step("extract", [
+        ReadSource(
+            CONFIG,
+            into="orders",
+            watermark_value=last_watermark,  # an aware datetime, kept by the job
+            # Optional: without it, each read creates boto3.client("s3").
+            client=boto3.client(
+                "s3",
+                region_name="eu-west-1",
+                aws_access_key_id=dbutils.secrets.get("aws", "key_id"),
+                aws_secret_access_key=dbutils.secrets.get("aws", "secret"),
+            ),
+        )
+    ]),
+    Step("load", [WriteTarget(CONFIG, key="orders")]),
 ]).run()
 
 # The selection is not exposed: the job takes its next watermark from the objects it read.
@@ -2126,11 +2192,17 @@ and write blobs in Google Cloud Storage (GCS) through Spark's file data sources,
 contract of the [disk connectors](#disk-diskreader-diskwriter) and the design of the [S3
 connectors](#s3-s3reader-s3writer): the reader returns a `pyspark.sql.DataFrame` and the writer
 receives one. `GcsReader` satisfies `Reader[DataFrame]` and `GcsWriter` satisfies
-`Writer[DataFrame]`, structurally, so `ReadSource` and `WriteTarget` use them unchanged. The
+`Writer[DataFrame]`, structurally. The
 arguments follow the [convention for an ingestion's
 parameters](#how-a-connector-receives-an-ingestions-parameters): `path`, `format`,
 `watermark_pattern` and `schema` are named after configuration keys, and the job computes
 `watermark_value`. GCS calls them objects; its Python SDK, and this page, call them blobs.
+
+In a configuration: `"system": "gcs"`, in the `source` section with the keys `path` and `format`
+(required), `watermark_pattern`, `schema` (a DDL string) and `options`, and in the `target` section
+with `path` and `format` (required) and `options`. `ReadSource` also takes `watermark_value`,
+`spark` and the optional argument `client`, a `google.cloud.storage.Client`; without it the `gcs`
+extra is needed.
 
 The reader lists the blobs directly under a prefix with google-cloud-storage, on the driver,
 selects those above the job's watermark before anything is loaded, and has Spark load exactly
@@ -2295,8 +2367,8 @@ and lists, creates and deletes nothing itself.
   included, and then writes the new ones. With Delta, the overwrite is a new version of the
   table.
 - The calling callback chooses at call time, by passing `replace`. The configuration has no
-  mode and there is no `replace()` method. `WriteTarget` calls `write(data)`, so it always
-  appends.
+  mode and there is no `replace()` method. `WriteTarget` calls `write(data)`, which appends,
+  unless it is given `replace=True`.
 - The blob names are Spark's (`part-<n>-<uuid>-c000...`), so a `GcsReader` that reads them back
   takes their watermark from their `timeCreated`. The Cloud Storage connector may also leave
   directory placeholders and `_SUCCESS`, which the reader ignores.
@@ -2369,39 +2441,47 @@ except ValueError as error:
     print(error)
 ```
 
-A job on Databricks: the configuration, the credentials and the watermark stay in the job, and
-the next watermark is taken from the blobs that were read. `unix_millis` keeps the milliseconds,
-as the reader does, without floating point.
+A job on Databricks: the systems are in the configuration, the credentials and the watermark stay
+in the job, and the next watermark is taken from the blobs that were read. `unix_millis` keeps the
+milliseconds, as the reader does, without floating point. `/Workspace/jobs/orders_gcs.json`:
+
+```json
+{
+  "source": {
+    "system": "gcs",
+    "path": "gs://acme-landing/orders",
+    "format": "json",
+    "schema": "id INT, amount DECIMAL(10,2), updated_at TIMESTAMP"
+  },
+  "target": {"system": "gcs", "path": "gs://acme-lake/orders", "format": "delta"}
+}
+```
 
 <!-- example: skip -->
 ```python
 import json
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 from google.cloud import storage
 from pyspark.sql import functions as F
 
 from ingestio import Process, ReadSource, Step, WriteTarget
-from ingestio.connector.all import GcsReader, GcsWriter
 
-config = json.loads(Path("/Workspace/jobs/orders_gcs.json").read_text())
-# {"path": "gs://acme-landing/orders", "format": "json", ...}
-
-reader = GcsReader(
-    config["path"],
-    config["format"],
-    watermark_value=last_watermark,  # an aware datetime, kept by the job
-    schema="id INT, amount DECIMAL(10,2), updated_at TIMESTAMP",
-    # Optional: without it, each read creates storage.Client(project=None), from ADC.
-    client=storage.Client.from_service_account_info(
-        json.loads(dbutils.secrets.get("gcp", "ingest_service_account"))
-    ),
-)
+CONFIG = "/Workspace/jobs/orders_gcs.json"
 
 process = Process([
-    Step("extract", [ReadSource(reader, into="orders")]),
-    Step("load", [WriteTarget(GcsWriter("gs://acme-lake/orders", "delta"), key="orders")]),
+    Step("extract", [
+        ReadSource(
+            CONFIG,
+            into="orders",
+            watermark_value=last_watermark,  # an aware datetime, kept by the job
+            # Optional: without it, each read creates storage.Client(project=None), from ADC.
+            client=storage.Client.from_service_account_info(
+                json.loads(dbutils.secrets.get("gcp", "ingest_service_account"))
+            ),
+        )
+    ]),
+    Step("load", [WriteTarget(CONFIG, key="orders")]),
 ]).run()
 
 # The selection is not exposed: the job takes its next watermark from the blobs it read.
@@ -2508,11 +2588,16 @@ and write files in a directory of a Databricks Unity Catalog volume through Spar
 sources, with the contract of the [disk connectors](#disk-diskreader-diskwriter) and the design
 of the [S3 connectors](#s3-s3reader-s3writer): the reader returns a `pyspark.sql.DataFrame` and
 the writer receives one. `VolumeReader` satisfies `Reader[DataFrame]` and `VolumeWriter`
-satisfies `Writer[DataFrame]`, structurally, so `ReadSource` and `WriteTarget` use them
-unchanged. The arguments follow the [convention for an ingestion's
-parameters](#how-a-connector-receives-an-ingestions-parameters): `volume`, `path`, `format`,
-`watermark_pattern` and `schema` are named after configuration keys, and the job computes
-`watermark_value`.
+satisfies `Writer[DataFrame]`, structurally. The arguments follow the [convention for an
+ingestion's parameters](#how-a-connector-receives-an-ingestions-parameters): `volume`, `path`,
+`format`, `watermark_pattern` and `schema` are named after configuration keys, and the job
+computes `watermark_value`.
+
+In a configuration: `"system": "volume"`, in the `source` section with the keys `volume`, `path`
+and `format` (required), `watermark_pattern`, `schema` (a DDL string) and `options`, and in the
+`target` section with `volume`, `path` and `format` (required) and `options`. `ReadSource` also
+takes `watermark_value`, `spark` and the optional argument `client`, a
+`databricks.sdk.WorkspaceClient`; without it the `databricks` extra is needed.
 
 The reader lists the files directly inside the directory through the Files API of the Databricks
 SDK, on the driver, selects those above the job's watermark before anything is loaded, and has
@@ -2702,8 +2787,8 @@ lists, creates and deletes nothing itself.
   not write included, and then writes the new files. With Delta, the overwrite is a new version
   of the table.
 - The calling callback chooses at call time, by passing `replace`. The configuration has no
-  mode and there is no `replace()` method. `WriteTarget` calls `write(data)`, so it always
-  appends.
+  mode and there is no `replace()` method. `WriteTarget` calls `write(data)`, which appends,
+  unless it is given `replace=True`.
 - Spark creates the directory, and its missing parents inside the volume, when they do not
   exist. A volume that does not exist, or that the session may not write, fails in Spark.
 - The file names are Spark's (`part-<n>-<uuid>-c000...`), so a `VolumeReader` that reads them
@@ -2776,44 +2861,56 @@ except ValueError as error:
     print(error)
 ```
 
-A job that runs outside Databricks and drives a cluster through Databricks Connect: the
-configuration and the watermark stay in the job, the client is the job's own, and the next
+A job that runs outside Databricks and drives a cluster through Databricks Connect: the systems
+are in the configuration, the watermark stays in the job, the client is the job's own, and the next
 watermark is taken from the files that were read. `unix_seconds` truncates to the second, as the
-reader does.
+reader does. `jobs/orders_volume.json`:
+
+```json
+{
+  "source": {
+    "system": "volume",
+    "volume": "main.landing.raw",
+    "path": "orders",
+    "format": "json",
+    "schema": "id INT, amount DECIMAL(10,2), updated_at TIMESTAMP"
+  },
+  "target": {
+    "system": "volume",
+    "volume": "main.lake.curated",
+    "path": "orders",
+    "format": "parquet"
+  }
+}
+```
 
 <!-- example: skip -->
 ```python
-import json
 from datetime import UTC, datetime
-from pathlib import Path
 
 from databricks.connect import DatabricksSession
 from databricks.sdk import WorkspaceClient
 from pyspark.sql import functions as F
 
 from ingestio import Process, ReadSource, Step, WriteTarget
-from ingestio.connector.all import VolumeReader, VolumeWriter
 
-config = json.loads(Path("jobs/orders_volume.json").read_text())
-# {"volume": "main.landing.raw", "path": "orders", "format": "json", ...}
+CONFIG = "jobs/orders_volume.json"
 
 spark = DatabricksSession.builder.profile("prod").getOrCreate()
 
-reader = VolumeReader(
-    config["volume"],
-    config["path"],
-    config["format"],
-    watermark_value=last_watermark,  # an aware datetime, kept by the job
-    schema="id INT, amount DECIMAL(10,2), updated_at TIMESTAMP",
-    # Optional: without it, each read creates WorkspaceClient() with the SDK's default
-    # authentication.
-    client=WorkspaceClient(profile="prod"),
-    spark=spark,
-)
-
 process = Process([
-    Step("extract", [ReadSource(reader, into="orders")]),
-    Step("load", [WriteTarget(VolumeWriter("main.lake.curated", "orders", "parquet"), key="orders")]),
+    Step("extract", [
+        ReadSource(
+            CONFIG,
+            into="orders",
+            watermark_value=last_watermark,  # an aware datetime, kept by the job
+            # Optional: without it, each read creates WorkspaceClient() with the SDK's default
+            # authentication.
+            client=WorkspaceClient(profile="prod"),
+            spark=spark,
+        )
+    ]),
+    Step("load", [WriteTarget(CONFIG, key="orders")]),
 ]).run()
 
 # The selection is not exposed: the job takes its next watermark from the files it read.
@@ -2921,20 +3018,22 @@ adds a column.
 (`append`) and the format (JSON Lines). Moving them out changes the public API, so it waits
 for a spec. See [specs/append_only_callback.md](../../specs/append_only_callback.md).
 
-Until that spec settles what `write` means, `WriteTarget` behaves differently with the
-writers: it appends to a `PostgresWriter`, a `DiskWriter`, an `S3Writer`, a `GcsWriter`, a
-`VolumeWriter`, a `UnityCatalogWriter` and a `BigQueryWriter`, whose `write(data)` appends, but
-overwrites with a `JsonLinesWriter`, whose `write` replaces the file by default. `PostgresWriter`,
-`DiskWriter`, `S3Writer`, `GcsWriter`, `VolumeWriter`, `UnityCatalogWriter` and `BigQueryWriter`
-leave the choice to the calling callback, through `write(data, replace=...)`,
-the opposite of `JsonLinesWriter(append=...)`.
+`WriteTarget` does not show the divergence: it appends to every target by default, a
+`json_lines` target included, which it builds as `JsonLinesWriter(append=True)`, and replaces
+every target with `replace=True`, which it builds as `JsonLinesWriter(append=False)`. For the
+other writers it calls `write(data)` or `write(data, replace=True)`, which leave the choice to the
+calling callback. The divergence remains for a job's own callback that builds a `JsonLinesWriter`
+itself: `JsonLinesWriter(append=...)` fixes the choice when the writer is built, the opposite of
+`write(data, replace=...)`, and by default replaces the file.
 
 ## Extras
 
 A third-party package that a connector needs becomes an optional extra, `ingestio[<name>]`, and
 the core stays without dependencies ([ADR 0002](../decisions/0002-zero-dependency-core.md)).
 The first extra is `ingestio[postgres]`, installed with `pip install 'ingestio[postgres]'`; it
-defines the pattern every later extra follows. The extras so far:
+defines the pattern every later extra follows. A [configuration](configuration.md) that names a
+system needs the extra of that system when its connector would import the package. The extras so
+far:
 
 | Extra | Holds | Needed by |
 |---|---|---|

@@ -9,13 +9,15 @@ points to the detail instead of repeating it. Start every task at
 The canonical text is [docs/philosophy.md](docs/philosophy.md). In short:
 
 - **Two concepts.** A connector talks to an external system through the `Reader` and/or
-  `Writer` protocols and decides nothing else. A callback is a stage of the pipeline that
-  performs an action. Something that fits neither: stop and report it.
+  `Writer` protocols and decides nothing else. The library ships every connector, and a job
+  names its source and target in its configuration. A callback is a stage of the pipeline
+  that performs an action. Something that fits neither: stop and report it.
 - **Essential by default.** A failing essential callback fails the pipeline. A non-essential
   one is an explicit choice of its author, and its failure is recorded in the run result,
   never swallowed.
-- **Simplicity.** The smallest abstraction that works: no internal frameworks, no registries,
-  no magic.
+- **Simplicity.** The smallest abstraction that works: no internal frameworks, no open
+  registries, no magic. The one mapping from names to classes is the closed table of shipped
+  connectors ([ADR 0015](docs/decisions/0015-choose-connectors-from-the-job-configuration.md)).
 - **Compose, do not impose.** Extending the library stays as simple as subclassing `Callback`
   in your own code.
 - **No dependencies in the core.** Integrations are optional extras.

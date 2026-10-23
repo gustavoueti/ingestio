@@ -24,9 +24,10 @@ Two attributes come with every callback:
   unbound before that.
 - `name`: the display name used in logs, the class name by default.
 
-Unlike connectors, callbacks are extended by subclassing
+Callbacks are extended by subclassing
 ([ADR 0003](../decisions/0003-connectors-as-protocols.md)). Subclassing in your own code is
-all it takes: there is nothing to register.
+all it takes: there is nothing to register. Connectors, by contrast, are extended in the library
+([ADR 0015](../decisions/0015-choose-connectors-from-the-job-configuration.md)).
 
 ## Sharing data
 
@@ -76,10 +77,41 @@ The column names are yours: ingestio has no opinion about them.
 
 | Callback | Does |
 |---|---|
-| `ReadSource(reader, *, into="records")` | calls `reader.read()` and stores the payload in `state[into]` |
-| `WriteTarget(writer, *, key="records")` | calls `writer.write(state[key])` |
+| `ReadSource(config, *, into="records", connection=None, client=None, watermark_value=None, spark=None)` | reads the `source` section of the job's configuration file, builds the reader it names, calls its `read()` and stores the payload in `state[into]` |
+| `WriteTarget(config, *, key="records", replace=False, connection=None, client=None)` | reads the `target` section, builds the writer it names and writes `state[key]` with it, appending, or replacing with `replace=True` |
 
-Both are exported by `ingestio` and by `ingestio.callback.all`. Append-only and SCD2 will be
+Both are exported by `ingestio` and by `ingestio.callback.all`. `config` is the path of the job's
+JSON configuration file. The file names the system, such as `postgres` or `s3`, and holds the
+connector's parameters; credentials, SDK clients and the watermark reach the callback as its other
+arguments, because they do not belong in a JSON file. The callback reads the file when it is built,
+so a mistake in it stops the job before anything runs. A callback does not accept a connector
+instance: only the connectors the library ships can be named. See
+[Configuration](configuration.md) for the file, the systems and their keys, and the errors.
+
+Both are essential: every error propagates out of the process unchanged.
+
+```python
+import json
+import tempfile
+from pathlib import Path
+
+from ingestio import Process, Step, WriteTarget
+
+with tempfile.TemporaryDirectory() as tmp:
+    out = Path(tmp) / "orders.jsonl"
+    config = Path(tmp) / "job.json"
+    config.write_text(
+        json.dumps({"target": {"system": "json_lines", "path": str(out)}}), encoding="utf-8"
+    )
+
+    Process(
+        [Step("load", [WriteTarget(config, key="orders")])],
+        state={"orders": [{"id": 1}, {"id": 2}]},
+    ).run()
+    print(out.read_text(encoding="utf-8"))
+```
+
+Append-only and SCD2 will be
 the library's default callbacks; they are planned in
 [specs/append_only_callback.md](../../specs/append_only_callback.md) and
 [specs/scd2_callback.md](../../specs/scd2_callback.md).

@@ -46,7 +46,6 @@ from databricks.sdk.service.files import DirectoryEntry
 from pyspark.sql import DataFrame, SparkSession, functions
 from pyspark.sql.types import IntegerType, StructField, StructType
 
-from ingestio import Process, Reader, ReadSource, Step, Writer, WriteTarget
 from ingestio.connector.all import VolumeReader, VolumeWriter
 
 T0 = datetime(2026, 10, 21, 9, 0, tzinfo=UTC)
@@ -1875,29 +1874,6 @@ def test_at031_a_failed_save_propagates_unchanged(call: WriteCall, log: _Log) ->
 
 
 # --- Composition --------------------------------------------------------------------------
-
-
-def test_at032_read_source_and_write_target_move_a_dataframe_and_append(
-    log: _Log, spark: _FakeSpark, client: _FakeWorkspaceClient
-) -> None:
-    _hold(client, _held("a.csv"))
-    source: Reader[DataFrame] = VolumeReader(
-        VOL, "orders", "csv", client=_client(client), spark=_session(spark)
-    )
-    target: Writer[DataFrame] = VolumeWriter(TARGET, "orders", "parquet")
-
-    process = Process(
-        [
-            Step("extract", [ReadSource(source, into="orders")]),
-            Step("load", [WriteTarget(target, key="orders")]),
-        ]
-    ).run()
-
-    (load,) = _loads(log)
-    assert process.state["orders"] is _frame(load.frame)
-    (save,) = _saves(log)
-    assert save.frame is load.frame
-    assert save.mode == "append"
 
 
 def test_at033_the_connectors_write_no_log_lines(

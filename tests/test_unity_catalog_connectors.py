@@ -36,7 +36,6 @@ from pyspark import SparkContext
 from pyspark.errors import AnalysisException
 from pyspark.sql import DataFrame, SparkSession, functions
 
-from ingestio import Process, Reader, ReadSource, Step, Writer, WriteTarget
 from ingestio.connector.all import UnityCatalogReader, UnityCatalogWriter
 
 BOUND_ROW: tuple[object, ...] = ("2026-10-21 09:30:00.5", "timestamp")
@@ -1224,26 +1223,6 @@ def test_at024_a_failed_save_propagates_unchanged_and_nothing_runs_after_it(
 
 
 # --- Composition --------------------------------------------------------------------------
-
-
-def test_at025_read_source_and_write_target_move_a_dataframe_and_append(log: _Log) -> None:
-    spark = _FakeSpark(log, columns=["id", "payload"])
-    source: Reader[DataFrame] = UnityCatalogReader("main.sales.orders", spark=_session(spark))
-    target: Writer[DataFrame] = UnityCatalogWriter("main.lake.orders")
-
-    process = Process(
-        [
-            Step("extract", [ReadSource(source, into="orders")]),
-            Step("load", [WriteTarget(target, key="orders")]),
-        ]
-    ).run()
-
-    (read,) = _table_reads(log)
-    assert process.state["orders"] is _frame(read.frame)
-    (save,) = _saves(log)
-    assert save.frame is read.frame
-    assert save.mode == "append"
-    assert save.name == LAKE
 
 
 def test_at026_the_connectors_write_no_log_lines(

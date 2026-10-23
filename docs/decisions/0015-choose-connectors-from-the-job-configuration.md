@@ -1,0 +1,101 @@
+# 0015. Choose the reader and the writer from the job's configuration file
+
+- **Status:** accepted
+- **Recorded:** 2026-10-23
+- **Evidence:** [specs/config_connectors.md](../../specs/config_connectors.md), decisions 1 to 17,
+  taken by the maintainer on 2026-10-23, and the reasons the maintainer gave the same day,
+  including those for decision 5;
+  `src/ingestio/callback/io.py`. It amends [the philosophy](../philosophy.md),
+  [ADR 0003](0003-connectors-as-protocols.md) and
+  [ADR 0013](0013-connector-configuration-convention.md).
+
+## Context
+
+- Jobs read their JSON configuration in `main.py`, built the connectors from it and injected
+  them into `ReadSource` and `WriteTarget`. Changing the source from disk to S3 meant changing
+  the code of the job, not only its configuration.
+- The philosophy ruled out registries and asked for connectors that users extend.
+- [ADR 0013](0013-connector-configuration-convention.md) left the job with the mapping of
+  configuration keys to constructor arguments, and recorded, without resolving it, that
+  `table_name`, `path` and `volume` of one flat configuration name the source while the same
+  argument of a writer names the target.
+
+## Decision
+
+- **The configuration file is the only way** the library's read and write callbacks reach a
+  connector. `ReadSource(config, ...)` and `WriteTarget(config, ...)` take the path of the
+  job's JSON configuration file, read it themselves and build the connector it names. They no
+  longer accept a connector instance. The change breaks the public API; the package is alpha.
+- **The shape of the file.** One `source` section for `ReadSource` and one `target` section for
+  `WriteTarget`, each naming its system with the key `system`. The names are the connector's
+  class name in snake case without `Reader` or `Writer`: `json_api`, `json_lines`, `disk`,
+  `postgres`, `s3`, `gcs`, `volume`, `unity_catalog`, `bigquery`. The other keys of a section
+  are the connector's constructor arguments of the same name.
+- **What does not belong in the JSON** reaches the callback as arguments: credentials, such as
+  a `PostgresConnection` the job builds from its own secrets, SDK clients (`client=`), and
+  per-run values such as `watermark_value`. The library still never reads secrets.
+- **The closed table is the one registry the library has.** The mapping from system names to the
+  connectors the library ships is private to the library, holds only shipped connectors, and
+  nothing outside the library can add to it: no mapping argument, no import path in the
+  configuration, no entry point.
+- **Users extend callbacks, not connectors.** A system the library does not integrate gets a
+  connector contributed to the library, or a feature request. The connector classes,
+  `Reader` and `Writer` stay public, so that a job's own callback can still build a shipped
+  connector for a strategy the library's callbacks do not offer.
+- **The extras stay as they are.** A configuration that names a system needs the extra of that
+  system when its connector would import the package.
+
+## Rationale
+
+The maintainer's request: "I want the jobs to only `import ingestio` and from there use the
+callbacks. Which read connector (source system)? Which write connector (target system)? That
+goes in the config: the callback that does the extraction reads it, and the callback that
+writes reads which system it writes to, so it uses the right connector."
+
+The maintainer gave these reasons on 2026-10-23:
+
+- **The configuration as the only way:** simplicity. The job's code should be as clean as
+  possible: it declares the source and the target in its configuration and places callbacks.
+- **The callback reads the file:** `main.py` does not have to parse anything.
+- **Only the connectors the library ships:** a system that is missing comes in through a
+  contribution to the library or a feature request, not through the job's code.
+
+The credentials stay out of the file for the reason of
+[ADR 0013](0013-connector-configuration-convention.md): on Databricks they come from
+`dbutils.secrets.get`, which the library never imports.
+
+The extras stay as they are (decision 5). They appear only in the install line: the job's code
+imports `ingestio` either way. Putting every integration's package in the core dependencies was
+considered and dropped: it would install them in every job, including the jobs that never use
+those systems, with the risk of version conflicts with what the runtime already ships.
+
+The table is closed, and not opened by a mapping argument or an import path in the configuration,
+for the reason of decision 4 above: a system that is missing comes in through a contribution to
+the library or a feature request, not through the job's code.
+
+## Consequences
+
+- **The philosophy changes in three sentences.** The library ships every connector, and the read
+  and write callbacks build the matching one from the configuration. "Registries" become "open
+  registries", and the closed table is the one mapping from names to classes the library has.
+  Users no longer extend connectors.
+- **ADR 0003 and ADR 0013 are amended.** A connector is no longer injected into the library's
+  read and write callbacks, and the library, not `main.py`, reads the configuration. The
+  connector itself still reads no file, environment variable or secret store, and has no
+  `from_config`.
+- **The ambiguity of `table_name` ends in a configuration.** Each section names its own system,
+  so the `target` section's `table_name`, `path` or `volume` is the target's. It remains only
+  for a job's own callback that builds a writer itself.
+- **A job that reads or writes through `ReadSource` and `WriteTarget` has a JSON configuration
+  file and uses a shipped connector.** The job still composes its process in code: the steps,
+  their order and its own callbacks.
+- **Changing a system is an edit of the JSON** and, when the new system needs an extra, of the
+  job's install.
+- **A system the library lacks needs a contributed connector.** It becomes one more row of the
+  table, through a spec of its own.
+- **`ReadSource` and `WriteTarget` stay essential** ([ADR 0011](0011-callbacks-as-stages-with-criticality.md)):
+  every error propagates, and configuration errors are raised when the callback is built, before
+  anything runs.
+- **Nothing closes the door to streaming** ([ADR 0012](0012-streaming-deferred.md)). The
+  `Reader` and `Writer` protocols and their open payload do not change, and a streaming
+  connector would be one more shipped system in the table, with keys of its own.
