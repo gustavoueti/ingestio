@@ -11,6 +11,7 @@ The map of every document in the repository. Agents start every task here.
 | [../AGENTS.md](../AGENTS.md) | Instructions for AI agents: constraints, hierarchy of truth, how to finish a task. |
 | [../CONTRIBUTING.md](../CONTRIBUTING.md) | Prescriptive standards for code, tests, commits and pull requests. |
 | [../README.md](../README.md) | What ingestio is, installation and a first example. |
+| [backlog.md](backlog.md) | Ideas the maintainer wants implemented, before they become specs. |
 
 ## Concepts
 
