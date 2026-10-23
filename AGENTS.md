@@ -32,6 +32,19 @@ The canonical text is [docs/philosophy.md](docs/philosophy.md). In short:
 When two sources disagree, the higher one wins and the lower one must be fixed. A spec that
 contradicts the philosophy is wrong, unless it comes with an ADR that changes the philosophy.
 
+## Ask the maintainer
+
+When a task needs a definition that only the maintainer can give, ask for it before going
+further. Never fill the gap with a guess, a convenient default or the most likely answer. This
+covers anything the philosophy, the docs, the spec and the code do not settle: behaviour, edge
+cases, naming, scope, a trade-off between principles, the intent behind a request.
+
+- Ask as early as possible, before writing anything that depends on the answer.
+- Ask everything at once, each question with the options you see and the one you recommend.
+- An agent of the development flow cannot reach the maintainer: it stops and reports the
+  question, and the main session takes it to the maintainer. In planning, the questions go
+  under **Open questions** in the spec.
+
 ## Constraints
 
 - **Never write to git or GitHub.** Reading is fine: `git log`, `show`, `diff`, `status`,
