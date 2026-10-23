@@ -52,6 +52,7 @@ One spec per change to `src/`, in [`specs/`](../specs/), written from
 |---|---|
 | [append_only_callback.md](../specs/append_only_callback.md) | The append-only default callback. |
 | [scd2_callback.md](../specs/scd2_callback.md) | The SCD2 default callback. |
+| [run_progress_log.md](../specs/run_progress_log.md) | The tree-shaped progress log of a run and `log_to_console`. |
 
 ## Agent tooling
 
