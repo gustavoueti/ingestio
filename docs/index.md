@@ -71,4 +71,6 @@ maintainer's working copy.
 | `.claude/kb/sdd-workflow/quick-reference.md` | Stages, statuses, write scopes and returns, from workflow.md. |
 | `.claude/hooks/guard_git_writes.py` | Blocks git and GitHub writes from every agent. |
 | `.claude/hooks/restrict_writes.py` | Keeps each agent's file edits inside its stage's directories. |
+| `.claude/hooks/progress_timer.py` | Keeps the clock of the `planner` and the `test-writer`, and reminds them every five minutes to report their progress. |
+| `.claude/progress/` | The progress reports of the `planner` and the `test-writer`, one file per agent, rewritten on each pass. |
 | `.claude/settings.json` | Permissions, attribution off, and the hooks above. |
