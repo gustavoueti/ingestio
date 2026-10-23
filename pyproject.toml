@@ -110,7 +110,9 @@ strict = true
 # ---------------------------------------------------------------------------
 [tool.semantic_release]
 version_variables = ["src/ingestio/__init__.py:__version__"]
-build_command = "uv build"
+# The release action runs semantic-release in its own Docker container, which
+# has Python and pip but not uv, so the build installs uv first.
+build_command = "python -m pip install uv && uv build"
 commit_message = "chore(release): v{version}"
 # Both differ from the defaults: without them the first automated release
 # would jump straight to 1.0.0.
