@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.3.0 (2026-10-23)
+
+### Features
+
+- **callback**: Choose the reader and the writer from the job's configuration
+  ([#12](https://github.com/gustavoueti/ingestio/pull/12),
+  [`6a6232b`](https://github.com/gustavoueti/ingestio/commit/6a6232b2e5e2ee081d0f52d0579f9c1ddb1d2ec5))
+
+
 ## v0.2.0 (2026-10-23)
 
 ### Features
