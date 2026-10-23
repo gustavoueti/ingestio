@@ -27,5 +27,11 @@ own.
 ## Consequences
 
 - `JsonApiReader` does not support endpoints that require authentication.
-- No extra exists yet; the first integration that needs one defines the pattern through its
-  spec.
+- The pattern for extras is defined by
+  [specs/postgres_connectors.md](../../specs/postgres_connectors.md), with the first extra,
+  `ingestio[postgres]`: the extra is named after the system it integrates; third-party
+  packages are imported only inside the functions that use them, so the package imports without
+  any extra; a connector whose extra is missing raises `ImportError` naming it when it is
+  built; an engine the runtime provides, such as pyspark, is a documented prerequisite and
+  never part of an extra; the `dev` group holds the packages of every extra. See
+  [Extras](../concepts/connectors.md#extras).

@@ -19,7 +19,7 @@ How the library works and how it is used.
 
 | Page | Covers |
 |---|---|
-| [concepts/connectors.md](concepts/connectors.md) | `Reader` and `Writer`, writing a connector, `JsonApiReader`, `JsonLinesWriter`. |
+| [concepts/connectors.md](concepts/connectors.md) | `Reader` and `Writer`, writing a connector, `JsonApiReader`, `JsonLinesWriter`, the PostgreSQL connectors, extras. |
 | [concepts/callbacks.md](concepts/callbacks.md) | `Callback`, sharing data through the state, `ReadSource`, `WriteTarget`, cancellation. |
 | [concepts/criticality.md](concepts/criticality.md) | Essential and non-essential callbacks. Not implemented yet. |
 | [concepts/lifecycle.md](concepts/lifecycle.md) | Building and running a process, the three passes of a step, failure, logging. |
@@ -43,6 +43,7 @@ Architecture decision records, in [decisions/](decisions/), written from
 | [0010](decisions/0010-release-automation.md) | Release from the commit history on main | accepted |
 | [0011](decisions/0011-callbacks-as-stages-with-criticality.md) | Treat callbacks as stages with a criticality | accepted, not implemented |
 | [0012](decisions/0012-streaming-deferred.md) | Defer streaming, and record what affects it | accepted |
+| [0013](decisions/0013-connector-configuration-convention.md) | Give a connector an ingestion's parameters as constructor arguments | accepted |
 
 ## Specs
 
@@ -54,6 +55,7 @@ One spec per change to `src/`, in [`specs/`](../specs/), written from
 | [append_only_callback.md](../specs/append_only_callback.md) | The append-only default callback. |
 | [scd2_callback.md](../specs/scd2_callback.md) | The SCD2 default callback. |
 | [run_progress_log.md](../specs/run_progress_log.md) | The tree-shaped progress log of a run and `log_to_console`. |
+| [postgres_connectors.md](../specs/postgres_connectors.md) | The PostgreSQL reader and writer, and the `ingestio[postgres]` extra. |
 
 ## Agent tooling
 

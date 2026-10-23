@@ -26,6 +26,11 @@ What in version 0.0.1 leans towards batch:
 - `Reader.read()` returns one payload per call.
 - A step finishes all its passes before the next step starts.
 - `JsonApiReader` loads the whole response body into memory.
+- The PostgreSQL connectors ([spec](../../specs/postgres_connectors.md)) lean towards batch:
+  `PostgresReader.read()` returns one slice, with a watermark fixed when the reader is built,
+  and `PostgresWriter.write()` needs the whole DataFrame before it commits. A streaming or CDC
+  source for PostgreSQL, such as logical replication, would be a different connector that
+  tracks its own offsets.
 
 What keeps the door open:
 
