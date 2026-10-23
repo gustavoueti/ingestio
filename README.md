@@ -15,8 +15,8 @@ your processing is batch. Those are things you build with it, not things it impo
 pip install ingestio
 ```
 
-No runtime dependencies. An integration that needs one is an optional extra, such as
-`pip install 'ingestio[postgres]'`.
+No runtime dependencies. An integration that needs one is an optional extra (`postgres`,
+`s3`, `gcs`, `databricks`, `bigquery`), such as `pip install 'ingestio[postgres]'`.
 
 ## The idea
 
@@ -32,8 +32,9 @@ Steps run in list order, and callbacks inside a step run in list order. There is
 priority attribute and no hidden reordering: the sequence you write is the sequence that
 runs.
 
-The library ships the engine, a few connectors (a JSON API reader, a JSON Lines writer, readers
-and writers for PostgreSQL and for files on disk) and two generic callbacks. The stages that
+The library ships the engine, a few connectors (a JSON API reader, a JSON Lines writer, and
+readers and writers for PostgreSQL, files on disk, Amazon S3, Google Cloud Storage, Databricks
+volumes, Unity Catalog tables and BigQuery) and two generic callbacks. The stages that
 are specific to your ingestion are yours to write — that is the point.
 
 ## Design philosophy
@@ -269,16 +270,17 @@ Process([
   whose target has another name passes that name to the writer.
 
 These two files are the whole job, and they run anywhere: in a container, as a Databricks job,
-on a laptop. The connectors built on Spark, such as the PostgreSQL and disk ones, expect a Spark
-session to be running already, and never start one. Databricks provides it; elsewhere, create
-it before the process runs, for example with `SparkSession.builder.getOrCreate()`. The rest of
-the library is plain Python. The PostgreSQL writer also needs the `postgres` extra; the
-requirements of each connector are in [docs/concepts/connectors.md](docs/concepts/connectors.md).
+on a laptop. The connectors built on Spark, every reader and writer except the JSON ones, expect
+a Spark session to be running already, and never start one. Databricks provides it; elsewhere,
+create it before the process runs, for example with `SparkSession.builder.getOrCreate()`. The
+rest of the library is plain Python. Some connectors also need their system's extra, such as `postgres`
+for the PostgreSQL writer or `bigquery` for the BigQuery writer; the requirements of each
+connector are in [docs/concepts/connectors.md](docs/concepts/connectors.md).
 
 ## Roadmap
 
-More connectors (object storage, Delta), and recipes — an optional declarative way to
-assemble a process, never a required one.
+More connectors (MySQL with change data capture, MongoDB), and recipes — an optional
+declarative way to assemble a process, never a required one.
 
 ## License
 

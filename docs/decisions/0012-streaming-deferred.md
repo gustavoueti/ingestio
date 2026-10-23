@@ -36,6 +36,32 @@ What in version 0.0.1 leans towards batch:
   built, and `DiskWriter.write()` needs the whole DataFrame. A streaming file source, such as
   Structured Streaming's file source or Auto Loader, tracks the files it processed in a
   checkpoint and would be a different connector.
+- The S3 connectors ([spec](../../specs/s3_connectors.md)) lean towards batch: `S3Reader.read()`
+  makes one selection of objects, with a watermark fixed when the reader is built, and
+  `S3Writer.write()` needs the whole DataFrame. A streaming source on S3, such as Auto Loader,
+  S3 event notifications or Structured Streaming's file source, tracks the objects it processed
+  in a checkpoint and would be a different connector.
+- The GCS connectors ([spec](../../specs/gcs_connectors.md)) lean towards batch:
+  `GcsReader.read()` makes one selection of blobs, with a watermark fixed when the reader is
+  built, and `GcsWriter.write()` needs the whole DataFrame. A streaming source on GCS, such as
+  Auto Loader, Pub/Sub notifications for Cloud Storage or Structured Streaming's file source,
+  tracks the blobs it processed in a checkpoint or a subscription and would be a different
+  connector.
+- The volume connectors ([spec](../../specs/volume_connectors.md)) lean towards batch:
+  `VolumeReader.read()` makes one selection of files, with a watermark fixed when the reader is
+  built, and `VolumeWriter.write()` needs the whole DataFrame. A streaming source on a volume,
+  such as Auto Loader or Structured Streaming's file source, tracks the files it processed in a
+  checkpoint and would be a different connector.
+- The Unity Catalog connectors ([spec](../../specs/unity_catalog_connectors.md)) lean towards
+  batch: `UnityCatalogReader.read()` returns one slice, with a watermark fixed when the reader is
+  built, and `UnityCatalogWriter.write()` needs the whole DataFrame. A streaming source for
+  Delta tables, such as `readStream` on a table or on its change data feed, tracks its progress
+  in a checkpoint and would be a different connector.
+- The BigQuery connectors ([spec](../../specs/bigquery_connectors.md)) lean towards batch:
+  `BigQueryReader.read()` returns one slice, with a watermark fixed when the reader is built, and
+  `BigQueryWriter.write()` needs the whole DataFrame before its statement commits. A streaming
+  source for BigQuery, such as its change history or a Pub/Sub subscription, or a Structured
+  Streaming write, would be a different connector.
 
 What keeps the door open:
 

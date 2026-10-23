@@ -19,7 +19,7 @@ How the library works and how it is used.
 
 | Page | Covers |
 |---|---|
-| [concepts/connectors.md](concepts/connectors.md) | `Reader` and `Writer`, writing a connector, `JsonApiReader`, `JsonLinesWriter`, the PostgreSQL connectors, `DiskReader`, `DiskWriter`, extras. |
+| [concepts/connectors.md](concepts/connectors.md) | `Reader` and `Writer`, writing a connector, `JsonApiReader`, `JsonLinesWriter`, the PostgreSQL connectors, `DiskReader`, `DiskWriter`, `S3Reader`, `S3Writer`, `GcsReader`, `GcsWriter`, `VolumeReader`, `VolumeWriter`, `UnityCatalogReader`, `UnityCatalogWriter`, `BigQueryReader`, `BigQueryWriter`, extras. |
 | [concepts/callbacks.md](concepts/callbacks.md) | `Callback`, sharing data through the state, `ReadSource`, `WriteTarget`, cancellation. |
 | [concepts/criticality.md](concepts/criticality.md) | Essential and non-essential callbacks. Not implemented yet. |
 | [concepts/lifecycle.md](concepts/lifecycle.md) | Building and running a process, the three passes of a step, failure, logging. |
@@ -44,6 +44,7 @@ Architecture decision records, in [decisions/](decisions/), written from
 | [0011](decisions/0011-callbacks-as-stages-with-criticality.md) | Treat callbacks as stages with a criticality | accepted, not implemented |
 | [0012](decisions/0012-streaming-deferred.md) | Defer streaming, and record what affects it | accepted |
 | [0013](decisions/0013-connector-configuration-convention.md) | Give a connector an ingestion's parameters as constructor arguments | accepted |
+| [0014](decisions/0014-create-a-missing-target-only-when-derived-from-the-data.md) | Create a missing target only in the form the system derives from the data | accepted |
 
 ## Specs
 
@@ -57,6 +58,11 @@ One spec per change to `src/`, in [`specs/`](../specs/), written from
 | [run_progress_log.md](../specs/run_progress_log.md) | The tree-shaped progress log of a run and `log_to_console`. |
 | [postgres_connectors.md](../specs/postgres_connectors.md) | The PostgreSQL reader and writer, and the `ingestio[postgres]` extra. |
 | [disk_connectors.md](../specs/disk_connectors.md) | The disk reader and writer: Spark file sources, selection by watermark before loading. |
+| [s3_connectors.md](../specs/s3_connectors.md) | The S3 reader and writer, listed with boto3, and the `ingestio[s3]` extra. |
+| [gcs_connectors.md](../specs/gcs_connectors.md) | The GCS reader and writer, listed with google-cloud-storage, and the `ingestio[gcs]` extra. |
+| [volume_connectors.md](../specs/volume_connectors.md) | The Databricks volume reader and writer, listed with the Databricks SDK's Files API, and the `ingestio[databricks]` extra. |
+| [unity_catalog_connectors.md](../specs/unity_catalog_connectors.md) | The Unity Catalog reader and writer: Delta tables by their three-part name, a watermark filter in the table's scan, a table created when missing. |
+| [bigquery_connectors.md](../specs/bigquery_connectors.md) | The BigQuery reader and writer: a watermark filter in the Storage Read API with a frozen bound, an atomic write through a staging table, and the `ingestio[bigquery]` extra. |
 
 ## Agent tooling
 
