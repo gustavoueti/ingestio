@@ -110,7 +110,7 @@ id, so concurrent runs on the same cluster stay readable:
 [a3f7c9] │ └ extract done in 413ms
 [a3f7c9] │ ┌ load (2/2) · 2 callbacks
 [a3f7c9] │ │ ✔ AddLineageColumns.run 3ms
-[a3f7c9] │ │ ✔ WriteTarget.run 15ms
+[a3f7c9] │ │ ✔ AppendOnly.run 15ms
 [a3f7c9] │ └ load done in 19ms
 [a3f7c9] └ process finished in 432ms
 ```
@@ -159,7 +159,7 @@ own depth.
 A failure and a cancellation:
 
 ```text
-[a3f7c9] │ │ ✖ WriteTarget.run failed after 2ms: PermissionError: [Errno 13] Permission denied
+[a3f7c9] │ │ ✖ AppendOnly.run failed after 2ms: PermissionError: [Errno 13] Permission denied
 [a3f7c9] │ └ load failed in 3ms
 [a3f7c9] └ process failed in 415ms
 ```

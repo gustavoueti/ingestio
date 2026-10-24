@@ -1,18 +1,20 @@
 # 0015. Choose the reader and the writer from the job's configuration file
 
-- **Status:** accepted
+- **Status:** accepted, amended by [0016](0016-make-each-write-strategy-one-callback.md)
 - **Recorded:** 2026-10-23
 - **Evidence:** [specs/config_connectors.md](../../specs/config_connectors.md), decisions 1 to 17,
   taken by the maintainer on 2026-10-23, and the reasons the maintainer gave the same day,
   including those for decision 5;
   `src/ingestio/callback/io.py`. It amends [the philosophy](../philosophy.md),
   [ADR 0003](0003-connectors-as-protocols.md) and
-  [ADR 0013](0013-connector-configuration-convention.md).
+  [ADR 0013](0013-connector-configuration-convention.md). It is amended by
+  [ADR 0016](0016-make-each-write-strategy-one-callback.md), which replaces `WriteTarget` with
+  `AppendOnly` and `FullLoad`.
 
 ## Context
 
 - Jobs read their JSON configuration in `main.py`, built the connectors from it and injected
-  them into `ReadSource` and `WriteTarget`. Changing the source from disk to S3 meant changing
+  them into `ReadSource` and `WriteTarget`, the write callback of the time. Changing the source from disk to S3 meant changing
   the code of the job, not only its configuration.
 - The philosophy ruled out registries and asked for connectors that users extend.
 - [ADR 0013](0013-connector-configuration-convention.md) left the job with the mapping of
@@ -23,11 +25,13 @@
 ## Decision
 
 - **The configuration file is the only way** the library's read and write callbacks reach a
-  connector. `ReadSource(config, ...)` and `WriteTarget(config, ...)` take the path of the
-  job's JSON configuration file, read it themselves and build the connector it names. They no
-  longer accept a connector instance. The change breaks the public API; the package is alpha.
+  connector. `ReadSource(config, ...)` and the library's write callbacks, `AppendOnly(config, ...)`
+  and `FullLoad(config, ...)`, take the path of the job's JSON configuration file, read it
+  themselves and build the connector it names. They do not accept a connector instance. The change
+  breaks the public API; the package is alpha. (This ADR was written for a single `WriteTarget`;
+  [ADR 0016](0016-make-each-write-strategy-one-callback.md) replaced it with the two callbacks.)
 - **The shape of the file.** One `source` section for `ReadSource` and one `target` section for
-  `WriteTarget`, each naming its system with the key `system`. The names are the connector's
+  each write callback, each naming its system with the key `system`. The names are the connector's
   class name in snake case without `Reader` or `Writer`: `json_api`, `json_lines`, `disk`,
   `postgres`, `s3`, `gcs`, `volume`, `unity_catalog`, `bigquery`. The other keys of a section
   are the connector's constructor arguments of the same name.
@@ -86,14 +90,14 @@ the library or a feature request, not through the job's code.
 - **The ambiguity of `table_name` ends in a configuration.** Each section names its own system,
   so the `target` section's `table_name`, `path` or `volume` is the target's. It remains only
   for a job's own callback that builds a writer itself.
-- **A job that reads or writes through `ReadSource` and `WriteTarget` has a JSON configuration
+- **A job that reads or writes through `ReadSource`, `AppendOnly` or `FullLoad` has a JSON configuration
   file and uses a shipped connector.** The job still composes its process in code: the steps,
   their order and its own callbacks.
 - **Changing a system is an edit of the JSON** and, when the new system needs an extra, of the
   job's install.
 - **A system the library lacks needs a contributed connector.** It becomes one more row of the
   table, through a spec of its own.
-- **`ReadSource` and `WriteTarget` stay essential** ([ADR 0011](0011-callbacks-as-stages-with-criticality.md)):
+- **`ReadSource`, `AppendOnly` and `FullLoad` stay essential** ([ADR 0011](0011-callbacks-as-stages-with-criticality.md)):
   every error propagates, and configuration errors are raised when the callback is built, before
   anything runs.
 - **Nothing closes the door to streaming** ([ADR 0012](0012-streaming-deferred.md)). The

@@ -9,125 +9,42 @@ An idea that changes `src/` goes to the planner and becomes a spec, as described
 [workflow.md](workflow.md). Its entry then links to that spec, and the entry is removed when
 the work lands.
 
-## Shared by ideas 3 to 9
+## Shared by ideas 8 and 9
 
-Ideas 3 to 9 are connectors that the maintainer listed on 2026-10-23. Each one changes `src/`,
-so each becomes a spec, and its third-party package goes into an extra named after the system,
-like `ingestio[postgres]`. These questions apply to all of them:
+Ideas 8 and 9 are connectors that the maintainer listed on 2026-10-23, together with S3, GCS,
+Unity Catalog, Volumes and BigQuery, which have landed. Each one changes `src/`, so each becomes
+a spec, and its third-party package goes into an extra named after the system, like
+`ingestio[postgres]`.
 
-- **Engine.** The PostgreSQL and disk connectors move data with Spark: the reader returns a
-  Spark DataFrame, the writer receives one, and a native client only does control work
-  (psycopg runs the transaction, `os.scandir` lists the files). Do the new connectors follow
-  that pattern? The alternatives are that each uses its system's native client without Spark,
-  with records, bytes or pandas in the Python process, or that each spec decides for itself.
-- **Order and grouping.** One spec per system, or grouped specs: S3 and GCS as object storage,
-  Unity Catalog and Volumes as Databricks, MySQL with its CDC? In which order? Every connector
-  changes the same files (`docs/concepts/connectors.md`, `src/ingestio/connector/all.py`,
-  `pyproject.toml`, ADRs 0012 and 0013), so only the planning of several connectors can run in
-  parallel. Every later stage runs one connector at a time.
+What the connectors that landed settled, which a new one follows unless its spec says otherwise:
 
-## 3. S3 reader and writer, with boto3
+- **Spark moves the data.** Every shipped connector except the JSON ones reads into a Spark
+  DataFrame and writes from one, and a native client only does control work: psycopg runs the
+  PostgreSQL transaction, boto3 lists the S3 objects.
+- **The job names the system in its configuration.** A new connector is one more row of the
+  closed table ([ADR 0015](decisions/0015-choose-connectors-from-the-job-configuration.md)): a
+  system name, the connector's class name in snake case without `Reader` or `Writer`, whose
+  section keys are the constructor arguments of the same name. Credentials, SDK clients and
+  per-run values are not keys: they reach `ReadSource`, `AppendOnly` and `FullLoad` as
+  arguments.
+- **The write callbacks choose the strategy.** `AppendOnly` calls `write(data)` and `FullLoad`
+  calls `write(data, replace=True)`
+  ([ADR 0016](decisions/0016-make-each-write-strategy-one-callback.md)), so a writer offers
+  `write(data, *, replace=False)` and decides nothing else. A merge, or applying CDC events, is
+  a write strategy: a callback of its own, with a spec of its own.
 
-**Idea.** A connector that reads from and writes to Amazon S3, built on boto3.
+These questions apply to both:
 
-**Spec:** [specs/s3_connectors.md](../specs/s3_connectors.md), which answers the questions
-below. The entry is removed when the work lands.
-
-**Open questions.**
-
-- What does boto3 do in the reader? With the Spark pattern, boto3 lists the objects under a
-  prefix and selects the ones above the watermark, and Spark loads only those, as `DiskReader`
-  does with a directory. `DiskReader` rejects `s3://` URIs today. Without Spark, boto3
-  downloads the objects itself and the payload is bytes or records.
-- What does boto3 do in the writer? If Spark writes to `s3://`, the writer may not need boto3
-  at all. Plain files that Spark writes to S3 are not atomic, because S3 has no rename, while
-  Delta is atomic through its log. Is that limit acceptable, as it is for `DiskWriter`?
-- Where does an object's watermark come from: its key, through a pattern, or its
-  `LastModified`? `LastModified` is precise to the second, which is coarser than the
-  millisecond `DiskReader` uses.
-- How does the connector get its credentials? boto3 and Spark look them up separately. On
-  Databricks, Spark reaches S3 through Unity Catalog external locations or an instance profile,
-  and boto3 needs its own credentials. Does the job pass them as arguments
-  ([ADR 0013](decisions/0013-connector-configuration-convention.md)), or a `boto3.Session`?
-- Does it support S3-compatible stores, such as MinIO or R2, through an endpoint URL?
-
-## 4. GCS reader and writer
-
-**Idea.** A connector for Google Cloud Storage.
-
-**Spec:** [specs/gcs_connectors.md](../specs/gcs_connectors.md), which answers the questions
-below. The entry is removed when the work lands.
-
-**Open questions.**
-
-- Read, write or both?
-- Does it answer the questions of idea 3 the way S3 does, with google-cloud-storage in place of
-  boto3? In particular: does the client only list and select the blobs, with Spark loading
-  them from `gs://`, or does it read and write their content?
-- Which environments must it support? Spark reads `gs://` only where the Hadoop GCS connector
-  is installed and configured.
-- Credentials: a service account key passed by the job, or the environment's default
-  credentials?
-
-## 5. Databricks Unity Catalog reader and writer
-
-**Idea.** A connector for tables in Databricks Unity Catalog.
-
-**Spec:** [specs/unity_catalog_connectors.md](../specs/unity_catalog_connectors.md), which
-answers the questions below. The entry is removed when the work lands.
-
-**Open questions.**
-
-- Read, write or both?
-- How does it read: through a watermark filter, as `PostgresReader` does, which Delta uses to
-  skip files; through Delta's change data feed, which also returns updates and deletes; or
-  either?
-- Which writes does it support? `PostgresWriter` and `DiskWriter` offer append and replace,
-  and both are atomic in Delta. A merge, like SCD2, is a write strategy, which the philosophy
-  gives to callbacks. Should the writer create a table that does not exist?
-- How does it differ from `DiskWriter(path, "delta")`? This connector names a table by its
-  three-part name, `catalog.schema.table`, not by a path.
-- Does it run only on a Databricks cluster, through Spark, or also outside Databricks, through
-  a SQL warehouse and databricks-sql-connector?
-
-## 6. Databricks Volumes connector
-
-**Idea.** A connector for files in Unity Catalog volumes.
-
-**Spec:** [specs/volume_connectors.md](../specs/volume_connectors.md), which answers the questions
-below. The entry is removed when the work lands.
-
-**Open questions.**
-
-- What does it add to `DiskReader` and `DiskWriter`? They already read and write
-  `/Volumes/<catalog>/<schema>/<volume>/...` on Databricks classic compute, through the
-  volume's FUSE mount ([connectors](concepts/connectors.md)). The options are:
-  - no new connector, only documentation of the disk connectors on volumes;
-  - a connector for jobs that run outside Databricks, through the Files API of the Databricks
-    SDK, in a new extra;
-  - a thin connector that builds the path from the catalog, schema and volume names.
-- If it is a new connector: read, write or both?
-
-## 7. BigQuery reader and writer
-
-**Idea.** A connector for Google BigQuery.
-
-**Spec:** [specs/bigquery_connectors.md](../specs/bigquery_connectors.md), which answers the questions
-below. The entry is removed when the work lands.
-
-**Open questions.**
-
-- Read, write or both?
-- Which engine? Spark's BigQuery data source (spark-bigquery-connector, a prerequisite that
-  Databricks Runtime includes) pushes filters into the BigQuery Storage Read API. The
-  google-cloud-bigquery client runs in the Python process.
-- How does the writer make append and replace atomic, as `PostgresWriter` does? The Spark data
-  source writes either directly, through the Storage Write API, or indirectly, through files
-  in a GCS bucket followed by a load job. Must the job provide that temporary bucket?
-- Where does the watermark filter run: on a column, as `PostgresReader` does? Should it also
-  prune the partitions of a partitioned table?
-- Credentials: a service account key, or the environment's default credentials? Can the
-  project that pays for the queries differ from the table's project?
+- **Engine.** Do MySQL and MongoDB follow the Spark pattern? The alternative is each system's
+  native client in the Python process, which none of the shipped connectors uses.
+- **Credentials.** The `connection` argument of the callbacks takes a `PostgresConnection`
+  today, the only system that needs one. Does a MySQL or MongoDB connection widen that argument
+  to one more type, or does each system get an argument of its own? Either changes the public
+  API of the three callbacks.
+- **Order.** Every connector changes the same files (`docs/concepts/connectors.md`,
+  `docs/concepts/configuration.md`, `src/ingestio/connector/all.py`,
+  `src/ingestio/callback/_configuration.py`, `pyproject.toml`), so only the planning of several
+  connectors can run in parallel. Every later stage runs one connector at a time.
 
 ## 8. MySQL reader and writer, with CDC
 
@@ -136,11 +53,13 @@ below. The entry is removed when the work lands.
 **Open questions.**
 
 - Does MySQL get a reader and a writer like the PostgreSQL ones, built on Spark JDBC with a
-  client on the driver for the transaction, and a separate CDC reader on top of them?
+  client on the driver for the transaction, and a separate CDC reader on top of them? Each would
+  be one more system of the table, such as `mysql`, and a CDC reader another one.
 - How is the writer atomic? `PostgresWriter` loads a staging table and applies it to the
   target in one transaction. In MySQL, DDL such as `CREATE TABLE`, `DROP TABLE` and `TRUNCATE`
-  commits the open transaction implicitly, so that recipe does not carry over as it is. A
-  replace would need a `DELETE` inside the transaction, or an atomic `RENAME TABLE` swap.
+  commits the open transaction implicitly, so that recipe does not carry over as it is.
+  `FullLoad`'s `write(data, replace=True)` would need a `DELETE` inside the transaction, or an
+  atomic `RENAME TABLE` swap.
 - Which CDC mechanism?
   - Log-based: read the binary log on the driver (python-mysql-replication) from a position up
     to the current one, and return each insert, update and delete with the row before and
@@ -150,15 +69,17 @@ below. The entry is removed when the work lands.
     deletes are missed.
   - External: Debezium captures the changes into Kafka or files, and ingestio reads them from
     there.
-- If log-based, who keeps the binlog position? ADR 0013 says the job passes an ingestion's
-  parameters, so the job would pass the position the way it passes a watermark and store the
-  next one. ADR 0012 says a CDC source for PostgreSQL "would be a different connector that
-  tracks its own offsets". Which rule applies? What happens when the server has already purged
-  the position? How does the first run work: a full snapshot taken at a consistent binlog
-  position?
-- Who applies the changes? The philosophy lists CDC replication as a callback. Does the
-  connector only return the change events, with a separate callback and spec applying them to
-  the target?
+- If log-based, who keeps the binlog position? Under ADR 0015 a per-run value reaches
+  `ReadSource` as an argument, as `watermark_value` does, so the job would pass the position and
+  store the next one, and `ReadSource` would get one more argument. ADR 0012 says a CDC source
+  for PostgreSQL "would be a different connector that tracks its own offsets". Which rule
+  applies? What happens when the server has already purged the position? How does the first run
+  work: a full snapshot taken at a consistent binlog position?
+- Who applies the changes? The philosophy lists CDC replication as a callback, and ADR 0016
+  makes each write strategy one callback. Does the connector only return the change events, with
+  a separate callback and spec applying them to the target? No shipped writer updates or deletes
+  rows today, so that callback needs a capability that the shipped writers lack, as SCD2 does
+  (idea 12).
 - Which client package: PyMySQL or mysql-connector-python? MySQL Connector/J is a prerequisite
   for Spark, as the PostgreSQL JDBC driver is.
 
@@ -174,80 +95,91 @@ below. The entry is removed when the work lands.
 - Where does the watermark come from: a field such as `updatedAt`, or, for append-only
   collections, the time inside the `_id` ObjectId?
 - Documents have no schema. Does the job pass one, or does Spark infer it by sampling? How are
-  nested documents and fields with mixed types handled?
-- Is a non-atomic write acceptable? The Spark connector writes in batches, not in one
-  transaction, and multi-document transactions need a replica set and have limits. The
-  alternative is a staging collection, for example with `$out`, which replaces the target
-  collection only once the aggregation finishes.
+  nested documents and fields with mixed types handled? A section's `schema` key is a DDL string
+  in the systems that take one.
+- Is a non-atomic write acceptable for `AppendOnly` and `FullLoad`? The Spark connector writes in
+  batches, not in one transaction, and multi-document transactions need a replica set and have
+  limits. For `FullLoad`, the alternative is a staging collection, for example with `$out`,
+  which replaces the target collection only once the aggregation finishes.
 - Does MongoDB need CDC too, through change streams, as MySQL does?
 
-## 11. Choose the reader and the writer from the job's configuration
+## 12. SCD2 write callback
 
-**Idea.** The job's configuration names the source system and the target system, with their
-parameters. The callback that extracts reads the source part, builds the matching reader and
-reads; the callback that writes reads the target part, builds the matching writer and writes.
-The job imports `ingestio` and places callbacks; it never imports or builds a connector.
+**Idea.** Implement SCD2, one of the two default callbacks the
+[philosophy](philosophy.md#callback) names: when a tracked attribute of an entity changes, its
+current version is closed and a new version is added, so that every past state stays queryable.
+Requested on 2026-10-23 and parked here while the write callbacks `AppendOnly` and `FullLoad`
+were built. They have landed
+([ADR 0016](decisions/0016-make-each-write-strategy-one-callback.md)).
 
-**Spec:** [specs/config_connectors.md](../specs/config_connectors.md), which answers the
-questions below. The entry is removed when the work lands.
+**Spec:** [specs/scd2_callback.md](../specs/scd2_callback.md), a `draft` written on 2026-10-22
+while the workflow was set up and never reviewed by the planner. It predates
+[ADR 0015](decisions/0015-choose-connectors-from-the-job-configuration.md), ADR 0016 and the
+Spark connectors, so it goes back to the planner first, with the changes listed under "Effects
+on the draft specs" in [specs/config_connectors.md](../specs/config_connectors.md). The entry is
+removed when the work lands.
 
-**Conflict with the philosophy.**
+**What changed since the draft.**
 
-- Turning a name in the configuration, such as `"postgres"`, into a connector class is a
-  registry, even as a fixed dictionary inside the callback, and the philosophy rules out
-  registries and extra configuration.
-- [ADR 0013](decisions/0013-connector-configuration-convention.md) gives the job the mapping of
-  configuration keys to constructor arguments; here the callback does it. The ADR expects a
-  later spec for "the configuration file and recipes", and the README's roadmap describes
-  recipes as "an optional declarative way to assemble a process, never a required one".
+- Each write strategy is one callback (ADR 0016). `AppendOnly` and `FullLoad` take the path of
+  the job's configuration and build their writer from the `target` section, through the closed
+  table, with the callback arguments `connection` and `client`. SCD2 is one more, built the same
+  way. The configuration has no mode.
+- The callback accepts no connector, so the proposal `SCD2(source, target, *, keys, ...)`
+  changes, and so does the spec's question 1: a capability that user connectors implement is
+  gone.
+- Every shipped writer offers `write(data, *, replace=False)`, and every one except `json_lines`
+  takes a Spark DataFrame. None updates or merges rows.
+- SCD2 reads the current versions from the target, so it also needs a reader of the target's
+  system, built from a section meant for a writer.
 
-The connectors keep deciding nothing: the choice is the callback's, which fits the two
-concepts.
+**Open questions.** They update the spec's own questions, which the numbers refer to.
 
-**Open questions.**
-
-- Does it add to the explicit form or replace it? `ReadSource(reader)` and
-  `WriteTarget(writer)` can stay, with the configuration as a second way, as the roadmap's
-  recipes describe, or the configuration can become the only way. Do the existing callbacks
-  accept a configuration, or are there new callbacks?
-- How does the callback get the configuration: as a constructor argument that `main.py` read
-  (`ReadSource(config["source"])`), from `process.state`, or as the path of the JSON file,
-  which the callback reads itself?
-- What is its shape? One possibility, which also ends the ambiguity of `table_name` recorded in
-  ADR 0013, because the source and the target each have their own section:
-
-  ```json
-  {
-    "source": {"system": "postgres", "table_name": "public.orders", "watermark_column": "updated_at"},
-    "target": {"system": "unity_catalog", "table_name": "main.bronze.orders"}
-  }
-  ```
-
-  What is the key called (`system`, `type`, `connector`), and what are the systems' names?
-- Credentials stay out of the configuration under ADR 0013, and on Databricks they come from
-  `dbutils.secrets.get`, which the library never imports. How does a reader built from the
-  configuration get its `PostgresConnection`?
-  - the job builds it and passes it to the callback, so the job still writes that code;
-  - the configuration names environment variables, which the callback reads;
-  - the configuration names a Databricks secret scope and its keys, which ties the library to
-    Databricks.
-
-  The same question applies to the `client` arguments. Connectors that fall back on a default
-  client, which finds its credentials in the environment, need nothing.
-- Values that change on every run, such as `watermark_value`, come from the job's code, not
-  from a static file. How does the callback receive them, and who stores the next watermark?
-- Append or replace: today the calling callback chooses with `replace=`, and the configuration
-  has no mode. Does the target section get one? Write strategies are callbacks, so how does
-  this meet the drafted append-only and SCD2 callbacks: do they also build their writer from
-  the configuration?
-- A connector the library does not ship: with no registry, how does a job use it? It keeps the
-  explicit form; it passes a mapping such as `{"crm": CrmReader}` to the callback; or the
-  configuration holds an import path such as `"crm_job.readers.CrmReader"`.
-- Errors: an unknown system, a missing parameter, a parameter the connector does not take (such
-  as `primary_key` today). Fail or ignore? When: while the process is built, or when the
-  callback runs?
-- Extras stay as they are: a configuration that names `bigquery` where the extra is missing
-  raises the `ImportError` that names the extra, as building the connector does today. So
-  changing a job's source from `disk` to `s3` takes an edit of its JSON and, when the new
-  system has an extra, of its install. Is that enough, or should the error name the
-  configuration key too?
+- How does it apply the changes (question 1)?
+  - An atomic rewrite: read the whole target with the reader of its system, compute the new
+    table in Spark (the closed versions plus the new ones) and write it with `replace=True`, as
+    `FullLoad` does. No connector needs a new capability, but every run rewrites the whole
+    dimension.
+  - A Delta `MERGE INTO`, in one commit. It scales better, but only Delta targets support it,
+    it needs a new merge capability on the Delta connectors, and it leaves PostgreSQL and
+    BigQuery out.
+  - Both, with the merge where the target supports it.
+- Which target systems does it support? A rewrite through `replace=True` is atomic for
+  `unity_catalog`, `bigquery`, `postgres`, and the file systems in `delta` format. For parquet,
+  CSV or JSON files in `disk`, `s3`, `gcs` or `volume` it is not, so a failure halfway through
+  can lose the dimension's history. Spark also refuses to overwrite a path it is reading from.
+  `json_lines` has no reader. Is it the atomic systems only?
+- How does it build the target's reader? Does the reader take the keys of the `target` section
+  (`table_name`, `path`, `format`) and the callback arguments `connection` and `client`?
+- What happens on the first run, when the target does not exist? It could treat the target as
+  empty and let the writer create it where
+  [ADR 0014](decisions/0014-create-a-missing-target-only-when-derived-from-the-data.md) allows
+  (`unity_catalog`, Delta files), and fail where the writer creates nothing (`postgres`,
+  `bigquery`).
+- Where do its parameters go: `keys`, the tracked columns, the names of the version columns?
+  Constructor arguments, or members of the file outside `source` and `target` (decision 11 of
+  the configuration spec)?
+- What does an entity that is current in the target but absent from the batch mean
+  (question 5)? Incremental: it stays as it is, which matches the readers that filter on a
+  watermark, but deletes in the source are missed. Snapshot: its current version is closed,
+  which needs the whole source on every run. Or an option, incremental by default?
+- Where does the effective time come from (questions 3 and 6)? `process.started_at` is the
+  same for the whole batch and rules out late-arriving records. A column of the record, such
+  as the source's `updated_at`, gives the business time but brings late-arriving records into
+  scope. An optional column could fall back on `process.started_at`.
+- What are the version columns (question 4)? `valid_from`, `valid_to` with `NULL` as the open
+  end, and `is_current`; a far-future date as the open end; or no `is_current`. Are the names
+  arguments?
+- Which columns are tracked (question 2)? Every column except the keys and the version
+  columns, or an optional list. With a list, does a change in an untracked column get ignored,
+  or overwrite the current version in place, as SCD1?
+- Is a duplicate business key in one batch an error before anything is written (question 7)?
+  "The last record wins" needs an ordering column, since a DataFrame has no order.
+- Are changes detected by a null-safe comparison of the tracked values, or by a hash stored in
+  a column (question 8)?
+- A Spark DataFrame is lazy, so the comparison with the current versions is a join and not a
+  materialised batch (question 9). Does a rewrite of the whole target close the door to
+  streaming ([ADR 0012](decisions/0012-streaming-deferred.md))?
+- What are the name and the module (question 10)? `SCD2`, or a name in the form of the shipped
+  strategies `AppendOnly` and `FullLoad`; in `callback/io.py` next to them, or a module of its
+  own?

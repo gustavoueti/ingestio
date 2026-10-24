@@ -33,10 +33,10 @@ runs.
 
 The library ships the engine, the connectors (a JSON API reader, a JSON Lines writer, and
 readers and writers for PostgreSQL, files on disk, Amazon S3, Google Cloud Storage, Databricks
-volumes, Unity Catalog tables and BigQuery) and two generic callbacks, `ReadSource` and
-`WriteTarget`. A job names its source and its target in a JSON file, and those two callbacks
-build the matching connector. The stages that are specific to your ingestion are yours to
-write — that is the point.
+volumes, Unity Catalog tables and BigQuery) and three generic callbacks: `ReadSource` reads the
+source, `AppendOnly` appends to the target and `FullLoad` replaces what it holds. A job names its
+source and its target in a JSON file, and those callbacks build the matching connector. The
+stages that are specific to your ingestion are yours to write — that is the point.
 
 ## Design philosophy
 
@@ -63,20 +63,20 @@ library ships), and no dependencies in the core. The full text is in
 ```python
 from pathlib import Path
 
-from ingestio import Process, ReadSource, Step, WriteTarget
+from ingestio import AppendOnly, Process, ReadSource, Step
 
 CONFIG = Path(__file__).with_name("config.json")
 
 process = Process([
     Step("extract", [ReadSource(CONFIG)]),
-    Step("load", [WriteTarget(CONFIG)]),
+    Step("load", [AppendOnly(CONFIG)]),
 ]).run()
 
 print(len(process.state["records"]))
 ```
 
-`WriteTarget` appends to the file; `WriteTarget(CONFIG, replace=True)` replaces it. A
-Databricks volume is an ordinary path, so the same job runs on a laptop and on a cluster.
+`AppendOnly` adds lines to the file; `FullLoad(CONFIG)` in its place replaces the file's content.
+A Databricks volume is an ordinary path, so the same job runs on a laptop and on a cluster.
 
 ## Writing a callback
 
@@ -118,7 +118,7 @@ Drop it into the step where it belongs:
 ```python
 Step("load", [
     AddLineageColumns(source="orders-api"),
-    WriteTarget(CONFIG),
+    AppendOnly(CONFIG),
 ])
 ```
 
@@ -158,7 +158,7 @@ and every callback moment that ran, with its outcome and how long it took.
 [a3f7c9] │ └ extract done in 413ms
 [a3f7c9] │ ┌ load (2/2) · 2 callbacks
 [a3f7c9] │ │ ✔ AddLineageColumns.run 3ms
-[a3f7c9] │ │ ✔ WriteTarget.run 15ms
+[a3f7c9] │ │ ✔ AppendOnly.run 15ms
 [a3f7c9] │ └ load done in 19ms
 [a3f7c9] └ process finished in 432ms
 ```
@@ -167,7 +167,7 @@ A failing callback gets a `✖` line at `ERROR` with the type and message of the
 the step and the process close as failed. The exception itself still propagates.
 
 ```text
-[a3f7c9] │ │ ✖ WriteTarget.run failed after 2ms: PermissionError: [Errno 13] Permission denied
+[a3f7c9] │ │ ✖ AppendOnly.run failed after 2ms: PermissionError: [Errno 13] Permission denied
 [a3f7c9] │ └ load failed in 3ms
 [a3f7c9] └ process failed in 415ms
 ```
@@ -196,8 +196,8 @@ orders_job/
 ```
 
 `config.json` names the source and the target of the ingestion. `ReadSource` reads its
-`source` section and `WriteTarget` its `target` section; each builds the connector that the
-section's `system` names, with the section's other keys as the connector's arguments.
+`source` section, and `AppendOnly` and `FullLoad` its `target` section; each builds the connector
+that the section's `system` names, with the section's other keys as the connector's arguments.
 Credentials never go in it.
 
 ```json
@@ -218,12 +218,12 @@ from datetime import datetime
 from pathlib import Path
 
 from ingestio import (
+    AppendOnly,
     Callback,
     CancelProcessException,
     Process,
     ReadSource,
     Step,
-    WriteTarget,
     log_to_console,
 )
 from ingestio.connector.all import PostgresConnection
@@ -262,14 +262,14 @@ Process([
     ]),
     Step("load", [
         SkipEmptyBatch(),
-        WriteTarget(CONFIG, connection=warehouse),
+        AppendOnly(CONFIG, connection=warehouse),
     ]),
 ]).run()
 ```
 
-- `ReadSource` and `WriteTarget` ship with the library; `last_watermark` and `SkipEmptyBatch`
-  belong to the job. `WriteTarget` appends; `WriteTarget(CONFIG, connection=warehouse,
-  replace=True)` replaces the target.
+- `ReadSource` and `AppendOnly` ship with the library; `last_watermark` and `SkipEmptyBatch`
+  belong to the job. `AppendOnly` appends to the target; `FullLoad(CONFIG, connection=warehouse)`
+  in its place replaces what the target holds.
 - The connection, with its credentials, and the run's watermark are arguments of the
   callbacks, not keys of the file: they are not JSON, and the library reads no secret.
 - `primary_key` is a parameter of the job: both callbacks ignore every top-level member other
@@ -292,8 +292,7 @@ connector are in [docs/concepts/connectors.md](docs/concepts/connectors.md).
 
 ## Roadmap
 
-More connectors (MySQL with change data capture, MongoDB), and the append-only and SCD2
-write callbacks.
+More connectors (MySQL with change data capture, MongoDB), and the SCD2 write callback.
 
 ## License
 

@@ -3,15 +3,16 @@
 import logging
 
 from ingestio.basics import (
+    AppendOnly,
     Callback,
     CancelProcessException,
     CancelStepException,
+    FullLoad,
     Process,
     Reader,
     ReadSource,
     Step,
     Writer,
-    WriteTarget,
     log_to_console,
 )
 
@@ -20,14 +21,15 @@ __version__ = "0.3.0"
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __all__ = [
+    "AppendOnly",
     "Callback",
     "CancelProcessException",
     "CancelStepException",
+    "FullLoad",
     "Process",
     "ReadSource",
     "Reader",
     "Step",
-    "WriteTarget",
     "Writer",
     "__version__",
     "log_to_console",

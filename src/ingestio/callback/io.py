@@ -9,14 +9,13 @@ from typing import TYPE_CHECKING
 
 from ingestio.callback._configuration import build_connector
 from ingestio.callback.core import Callback
-from ingestio.connector.local import JsonLinesWriter
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
 
     from ingestio.connector.postgres import PostgresConnection
 
-__all__ = ["ReadSource", "WriteTarget"]
+__all__ = ["AppendOnly", "FullLoad", "ReadSource"]
 
 
 class ReadSource(Callback):
@@ -59,14 +58,15 @@ class ReadSource(Callback):
         self.process.state[self.into] = self._reader.read()
 
 
-class WriteTarget(Callback):
-    """Writes a value of the shared state to the target that the job's configuration names.
+class AppendOnly(Callback):
+    """Appends a value of the shared state to the target that the job's configuration names.
+
+    What the target already holds stays as it is.
 
     Args:
         config: Path of the job's JSON configuration file. Its `target` section names the
             system and holds the writer's parameters.
         key: Key of `Process.state` holding the value to write.
-        replace: Make the target hold exactly the value written. Appends when `False`.
         connection: Where a PostgreSQL target lives, with its credentials. Required by the
             `postgres` system.
         client: SDK client of the target, for the systems that take one.
@@ -77,23 +77,42 @@ class WriteTarget(Callback):
         config: str | os.PathLike[str],
         *,
         key: str = "records",
-        replace: bool = False,
         connection: PostgresConnection | None = None,
         client: object | None = None,
     ) -> None:
         self._writer = build_connector(
-            config,
-            "target",
-            {"connection": connection, "client": client},
-            append=not replace,
+            config, "target", {"connection": connection, "client": client}
         )
         self.key = key
-        self._replace = replace
 
     def run(self) -> None:
-        data = self.process.state[self.key]
-        # JsonLinesWriter chooses append or replace when it is built and has no `replace`.
-        if self._replace and not isinstance(self._writer, JsonLinesWriter):
-            self._writer.write(data, replace=True)
-        else:
-            self._writer.write(data)
+        self._writer.write(self.process.state[self.key])
+
+
+class FullLoad(Callback):
+    """Makes the target that the job's configuration names hold exactly a value of the state.
+
+    Args:
+        config: Path of the job's JSON configuration file. Its `target` section names the
+            system and holds the writer's parameters.
+        key: Key of `Process.state` holding the value to write.
+        connection: Where a PostgreSQL target lives, with its credentials. Required by the
+            `postgres` system.
+        client: SDK client of the target, for the systems that take one.
+    """
+
+    def __init__(
+        self,
+        config: str | os.PathLike[str],
+        *,
+        key: str = "records",
+        connection: PostgresConnection | None = None,
+        client: object | None = None,
+    ) -> None:
+        self._writer = build_connector(
+            config, "target", {"connection": connection, "client": client}
+        )
+        self.key = key
+
+    def run(self) -> None:
+        self._writer.write(self.process.state[self.key], replace=True)

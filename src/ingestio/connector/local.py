@@ -43,7 +43,6 @@ class JsonLinesWriter:
 
     Args:
         path: Destination file. Parent directories are created when missing.
-        append: Append to the file instead of replacing it.
         encoding: Text encoding of the output file.
     """
 
@@ -51,17 +50,20 @@ class JsonLinesWriter:
         self,
         path: Path | str,
         *,
-        append: bool = False,
         encoding: str = "utf-8",
     ) -> None:
         self.path = Path(path)
-        self.append = append
         self.encoding = encoding
 
-    def write(self, data: Iterable[Mapping[str, Any]]) -> None:
-        """Write every record as one JSON line."""
+    def write(self, data: Iterable[Mapping[str, Any]], *, replace: bool = False) -> None:
+        """Write every record as one JSON line.
+
+        Args:
+            data: The records to write.
+            replace: Make the file hold exactly the records of `data`. Appends when `False`.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        mode = "a" if self.append else "w"
+        mode = "w" if replace else "a"
         with self.path.open(mode, encoding=self.encoding) as handle:
             for record in data:
                 # default=str keeps datetimes and similar values writable.

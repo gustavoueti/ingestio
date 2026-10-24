@@ -1,16 +1,19 @@
-"""Choosing the reader and the writer from the job's configuration: `ReadSource`, `WriteTarget`.
+"""Choosing the reader from the job's configuration: `ReadSource`.
 
-Covers `specs/config_connectors.md`. Every test writes the job's configuration with `json.dumps`
-to a file under `tmp_path` and passes its path. The tests need no JVM, no cloud service and no
-database: the doubles below, a fake Spark session, fake DataFrames, fake S3, GCS, Volumes and
-BigQuery clients and a fake `psycopg.connect`, write every call they receive to one ordered log.
+Covers `specs/config_connectors.md`, except the cases that build a `WriteTarget`, which
+`specs/append_only_callback.md` supersedes: the target section is covered by
+`tests/test_append_only_callback.py`. Every test writes the job's configuration with
+`json.dumps` to a file under `tmp_path` and passes its path. The tests need no JVM, no cloud
+service and no database: the doubles below, a fake Spark session, fake DataFrames, fake S3, GCS,
+Volumes and BigQuery clients and a fake `psycopg.connect`, write every call they receive to one
+ordered log.
 
 A test that maps a system to a connector runs the callback over one set of doubles and a *twin*,
 the connector built directly from `ingestio.connector.all`, over a second set in the same initial
 state, and compares the two logs. `json_api` reads from the `api_url` fixture, a local HTTP
-server, `json_lines` and `disk` use files under `tmp_path`, and a missing package is simulated in
-a fresh interpreter. The default clients of the SDKs and `SparkSession.active` fail when used, so
-that no test reaches a real service.
+server, `disk` uses files under `tmp_path`, and a missing package is simulated in a fresh
+interpreter. The default clients of the SDKs and `SparkSession.active` fail when used, so that no
+test reaches a real service.
 """
 
 from __future__ import annotations
@@ -30,49 +33,37 @@ from urllib.error import HTTPError
 
 import psycopg
 import pytest
-from google.cloud.bigquery import SchemaField, Table
 from psycopg import sql
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import SparkSession
 
-from ingestio import Process, ReadSource, Step, WriteTarget
+from ingestio import Process, ReadSource, Step
 from ingestio.connector.all import (
     BigQueryReader,
-    BigQueryWriter,
     DiskReader,
-    DiskWriter,
     GcsReader,
-    GcsWriter,
     JsonApiReader,
-    JsonLinesWriter,
     PostgresConnection,
     PostgresReader,
-    PostgresWriter,
     S3Reader,
-    S3Writer,
     UnityCatalogReader,
-    UnityCatalogWriter,
     VolumeReader,
-    VolumeWriter,
 )
 
 EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 OCT_1 = datetime(2026, 10, 1, tzinfo=UTC)
 NAIVE = datetime(2026, 10, 1)  # noqa: DTZ001 - the naive watermark of AT-018
-DAY = timedelta(days=1)
 API = "https://api.example.com/v1/orders"
 S3_SOURCE = "s3://acme-landing/orders"
 GCS_SOURCE = "gs://acme-landing/orders"
 DISK_PATTERN = r"orders_(\d{8})\.csv"
 GCS_PATTERN = r"orders_(\d{8})\.json"
 SOURCE_NAMES = "bigquery, disk, gcs, json_api, postgres, s3, unity_catalog, volume"
-TARGET_NAMES = "bigquery, disk, gcs, json_lines, postgres, s3, unity_catalog, volume"
-STAGING_NAME = re.compile(r"ingestio_staging_[0-9a-f]{32}")
 COLUMNS = ("id", "payload")
 BOUND_ROW = ("2026-10-21 09:30:00+00", "timestamp")
 BIGQUERY_ROWS = (('DATE "2026-10-21"',),)
 
-# The required keys of each system, in the order of the spec's table, with values its connector
-# accepts.
+# The required keys of each source system, in the order of the spec's table, with values its
+# connector accepts.
 SOURCE_REQUIRED: dict[str, dict[str, object]] = {
     "json_api": {"url": API},
     "disk": {"path": "/data/landing/orders", "format": "csv"},
@@ -83,27 +74,16 @@ SOURCE_REQUIRED: dict[str, dict[str, object]] = {
     "unity_catalog": {"table_name": "main.bronze.orders"},
     "bigquery": {"table_name": "acme-data.sales.orders"},
 }
-TARGET_REQUIRED: dict[str, dict[str, object]] = {
-    "json_lines": {"path": "/data/out/orders.jsonl"},
-    "disk": {"path": "/data/lake/orders", "format": "parquet"},
-    "postgres": {"table_name": "public.orders_copy"},
-    "s3": {"path": "s3://acme-lake/orders", "format": "delta"},
-    "gcs": {"path": "gs://acme-lake/orders", "format": "delta"},
-    "volume": {"volume": "main.lake.curated", "path": "orders", "format": "parquet"},
-    "unity_catalog": {"table_name": "main.silver.orders"},
-    "bigquery": {"table_name": "acme-data.lake.orders"},
-}
-REQUIRED = {"source": SOURCE_REQUIRED, "target": TARGET_REQUIRED}
-BUILD: dict[str, Callable[..., object]] = {"source": ReadSource, "target": WriteTarget}
+REQUIRED = {"source": SOURCE_REQUIRED}
+BUILD: dict[str, Callable[..., object]] = {"source": ReadSource}
 
-# The systems of the rows of AT-022 and AT-024.
+# The systems of the rows of AT-022.
 READ_SYSTEMS = ("disk", "postgres", "s3", "gcs", "volume", "unity_catalog", "bigquery")
-WRITE_SYSTEMS = ("disk", "postgres", "s3", "gcs", "volume", "unity_catalog", "bigquery")
 
 SECTIONS = pytest.mark.parametrize(
     ("section", "build"),
-    [("source", ReadSource), ("target", WriteTarget)],
-    ids=["ReadSource", "WriteTarget"],
+    [("source", ReadSource)],
+    ids=["ReadSource"],
 )
 
 
@@ -228,24 +208,15 @@ class _FakeDataFrame(_Fake):
     """Stands in for a `DataFrame` with the columns `id` and `payload`.
 
     `where` and `selectExpr` return a new `_FakeDataFrame`, and `first()` answers `BOUND_ROW`.
-    Each `write` is a new `_FakeWriter`, whose save raises `save_error` once recorded, when it
-    is set.
     """
 
-    def __init__(self, log: _Log, *, save_error: BaseException | None = None) -> None:
+    def __init__(self, log: _Log) -> None:
         super().__init__(log, "frame")
-        self._save_error = save_error
 
     @property
     def columns(self) -> list[str]:
         self._record("columns")
         return list(COLUMNS)
-
-    @property
-    def write(self) -> _FakeWriter:
-        writer = _FakeWriter(self._log, self._save_error)
-        self._record("write", result=writer)
-        return writer
 
     def where(self, *args: object, **kwargs: object) -> _FakeDataFrame:
         frame = _FakeDataFrame(self._log)
@@ -262,41 +233,6 @@ class _FakeDataFrame(_Fake):
     def first(self) -> tuple[object, ...]:
         self._record("first")
         return BOUND_ROW
-
-
-class _FakeWriter(_Fake):
-    """Stands in for `DataFrame.write`. `save` and `saveAsTable` raise `save_error` once
-    recorded, when it is set."""
-
-    def __init__(self, log: _Log, save_error: BaseException | None) -> None:
-        super().__init__(log, "write")
-        self._save_error = save_error
-
-    def format(self, *args: object, **kwargs: object) -> _FakeWriter:
-        self._record("format", args, kwargs, self)
-        return self
-
-    def option(self, *args: object, **kwargs: object) -> _FakeWriter:
-        self._record("option", args, kwargs, self)
-        return self
-
-    def options(self, *args: object, **kwargs: object) -> _FakeWriter:
-        self._record("options", args, kwargs, self)
-        return self
-
-    def mode(self, *args: object, **kwargs: object) -> _FakeWriter:
-        self._record("mode", args, kwargs, self)
-        return self
-
-    def save(self, *args: object, **kwargs: object) -> None:
-        self._record("save", args, kwargs)
-        if self._save_error is not None:
-            raise self._save_error
-
-    def saveAsTable(self, *args: object, **kwargs: object) -> None:  # noqa: N802 - PySpark's name
-        self._record("saveAsTable", args, kwargs)
-        if self._save_error is not None:
-            raise self._save_error
 
 
 @dataclass(frozen=True)
@@ -394,18 +330,9 @@ class _FakeFiles(_Fake):
         return list(VOLUME_ENTRIES)
 
 
-def _table_summary(table: Table) -> tuple[object, ...]:
-    """What `create_table` receives, as values two logs can compare."""
-    schema = [schema_field.to_api_repr() for schema_field in table.schema]
-    return (table.project, table.dataset_id, table.table_id, schema, table.expires)
-
-
 class _FakeBigQueryClient(_Fake):
-    """Stands in for a `google.cloud.bigquery.Client`.
-
-    `query` returns a `_FakeJob` whose result is `BIGQUERY_ROWS`. `get_table` returns the target
-    of AT-024, `acme-data.lake.orders`, with the columns `id` and `payload`.
-    """
+    """Stands in for a `google.cloud.bigquery.Client`. `query` returns a `_FakeJob` whose result
+    is `BIGQUERY_ROWS`."""
 
     def __init__(self, log: _Log) -> None:
         super().__init__(log, "bigquery")
@@ -414,18 +341,6 @@ class _FakeBigQueryClient(_Fake):
         job = _FakeJob(self._log)
         self._record("query", args, kwargs, job)
         return job
-
-    def get_table(self, *args: object, **kwargs: object) -> Table:
-        self._record("get_table", args, kwargs)
-        schema = [SchemaField("id", "INTEGER", mode="REQUIRED"), SchemaField("payload", "STRING")]
-        return Table("acme-data.lake.orders", schema=schema)
-
-    def create_table(self, table: Table, *args: object, **kwargs: object) -> Table:
-        self._record("create_table", (_table_summary(table), *args), kwargs)
-        return table
-
-    def delete_table(self, *args: object, **kwargs: object) -> None:
-        self._record("delete_table", args, kwargs)
 
     def close(self, *args: object, **kwargs: object) -> None:
         self._record("close", args, kwargs)
@@ -508,10 +423,6 @@ class _World:
         self.bigquery = _FakeBigQueryClient(self.log)
         self.psycopg = _FakePsycopg(self.log)
 
-    def frame(self, *, save_error: BaseException | None = None) -> _FakeDataFrame:
-        """A new DataFrame of this set, with the columns `id` and `payload`."""
-        return _FakeDataFrame(self.log, save_error=save_error)
-
 
 # --- Fixtures and helpers -----------------------------------------------------------------
 
@@ -577,11 +488,6 @@ def _session(fake: _FakeSpark) -> SparkSession:
     return cast(SparkSession, fake)
 
 
-def _frame(fake: _FakeDataFrame) -> DataFrame:
-    """The fake, typed as the DataFrame the connectors deal in."""
-    return cast(DataFrame, fake)
-
-
 def _label(value: object) -> str:
     """The label of a double."""
     assert isinstance(value, _Fake), value
@@ -603,46 +509,9 @@ def _lines(path: Path) -> list[Any]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-def _a_day_after(moment: datetime, window: tuple[datetime, datetime]) -> bool:
-    """Whether `moment` is a day after an instant of `window`, to BigQuery's millisecond."""
-    start, end = window
-    lowest = start + DAY
-    lowest = lowest.replace(microsecond=lowest.microsecond // 1000 * 1000)
-    return lowest <= moment <= end + DAY
-
-
-def _comparable(value: object, window: tuple[datetime, datetime] | None) -> object:
-    """`value` with what a writer generates replaced by placeholders: a staging table name and,
-    within `window`, an expiry time a day after the write."""
-    if isinstance(value, str):
-        return STAGING_NAME.sub("ingestio_staging_<32 hex digits>", value)
-    if isinstance(value, datetime):
-        if window is not None and _a_day_after(value, window):
-            return "<a day after the write>"
-        return value
-    if isinstance(value, tuple):
-        return tuple(_comparable(item, window) for item in value)
-    if isinstance(value, list):
-        return [_comparable(item, window) for item in value]
-    if isinstance(value, dict):
-        return {key: _comparable(item, window) for key, item in value.items()}
-    return value
-
-
-def _transcript(
-    log: _Log, window: tuple[datetime, datetime] | None = None
-) -> list[tuple[object, ...]]:
+def _transcript(log: _Log) -> list[tuple[object, ...]]:
     """The calls of `log`, in order, as values that the log of another set can equal."""
-    return [
-        (
-            call.target,
-            call.method,
-            _comparable(call.args, window),
-            _comparable(call.kwargs, window),
-            call.result,
-        )
-        for call in log.calls
-    ]
+    return [(call.target, call.method, call.args, call.kwargs, call.result) for call in log.calls]
 
 
 def _run_python(code: str, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -848,75 +717,18 @@ def _required_read_row(
     )
 
 
-def _write_row(
-    system: str, ours: _World, theirs: _World, conn: PostgresConnection, tmp_path: Path
-) -> _Row:
-    """The row of AT-024 for `system`: the target section besides `system`, the callback's
-    arguments over `ours`, and a function that builds the twin over `theirs`."""
-    if system == "disk":
-        lake = str(tmp_path / "lake" / "orders")
-        return (
-            {"path": lake, "format": "parquet", "options": {"compression": "snappy"}},
-            {},
-            lambda: DiskWriter(lake, "parquet", options={"compression": "snappy"}),
-        )
-    if system == "postgres":
-        return (
-            {"table_name": "public.orders_copy", "options": {"batchsize": 1000}},
-            {"connection": conn},
-            lambda: PostgresWriter("public.orders_copy", conn, options={"batchsize": 1000}),
-        )
-    if system == "s3":
-        return (
-            {"path": "s3://acme-lake/orders", "format": "delta"},
-            {},
-            lambda: S3Writer("s3://acme-lake/orders", "delta"),
-        )
-    if system == "gcs":
-        return (
-            {"path": "gs://acme-lake/orders", "format": "delta"},
-            {},
-            lambda: GcsWriter("gs://acme-lake/orders", "delta"),
-        )
-    if system == "volume":
-        return (
-            {"volume": "main.lake.curated", "path": "orders", "format": "parquet"},
-            {},
-            lambda: VolumeWriter("main.lake.curated", "orders", "parquet"),
-        )
-    if system == "unity_catalog":
-        return (
-            {"table_name": "main.silver.orders", "options": {"mergeSchema": True}},
-            {},
-            lambda: UnityCatalogWriter("main.silver.orders", options={"mergeSchema": True}),
-        )
-    assert system == "bigquery", system
-    return (
-        {"table_name": "acme-data.lake.orders", "billing_project": "acme-billing"},
-        {"client": ours.bigquery},
-        lambda: BigQueryWriter(
-            "acme-data.lake.orders",
-            billing_project="acme-billing",
-            client=cast(Any, theirs.bigquery),
-        ),
-    )
-
-
 # --- Import surface -----------------------------------------------------------------------
 
 AT001_CODE = """
 import ingestio
 import ingestio.callback.all as callbacks
 import ingestio.connector.all as connectors
-from ingestio import ReadSource, WriteTarget
+from ingestio import ReadSource
 from ingestio.callback.all import ReadSource as CallbackReadSource
-from ingestio.callback.all import WriteTarget as CallbackWriteTarget
 
 assert ReadSource is CallbackReadSource
-assert WriteTarget is CallbackWriteTarget
-for name in ("ReadSource", "WriteTarget"):
-    assert name in ingestio.__all__, ingestio.__all__
-    assert name in callbacks.__all__, callbacks.__all__
+assert "ReadSource" in ingestio.__all__, ingestio.__all__
+assert "ReadSource" in callbacks.__all__, callbacks.__all__
 exported = {
     "BigQueryReader", "BigQueryWriter", "DiskReader", "DiskWriter", "GcsReader", "GcsWriter",
     "JsonApiReader", "JsonLinesWriter", "PostgresReader", "PostgresWriter", "S3Reader",
@@ -929,7 +741,7 @@ assert "PostgresConnection" not in ingestio.__all__, ingestio.__all__
 """
 
 
-def test_at001_the_callbacks_keep_their_import_paths_and_the_connectors_stay_exported(
+def test_at001_read_source_keeps_its_import_paths_and_the_connectors_stay_exported(
     tmp_path: Path,
 ) -> None:
     result = _run_python(AT001_CODE, tmp_path)
@@ -949,15 +761,16 @@ for name in ("pyspark.sql", "psycopg", "boto3", "google.cloud", "databricks.sdk"
     else:
         raise AssertionError(f"{name} can be imported")
 
-from ingestio import Process, ReadSource, Step, WriteTarget
+import json
+
+from ingestio import Process, ReadSource, Step
 
 read = ReadSource(sys.argv[1])
-write = WriteTarget(sys.argv[1])
-Process([Step("extract", [read]), Step("load", [write])]).run()
+print(json.dumps(Process([Step("extract", [read])]).run().state["records"]))
 """
 
 
-def test_at002_json_api_and_json_lines_build_without_pyspark_or_any_extra(
+def test_at002_json_api_builds_without_pyspark_or_any_extra(
     api_url: str, payload: list[dict[str, Any]], tmp_path: Path
 ) -> None:
     out = tmp_path / "out" / "orders.jsonl"
@@ -966,7 +779,7 @@ def test_at002_json_api_and_json_lines_build_without_pyspark_or_any_extra(
     result = _run_python(AT002_CODE, tmp_path, os.fspath(path))
 
     assert result.returncode == 0, result.stderr
-    assert _lines(out) == payload
+    assert json.loads(result.stdout) == payload
 
 
 # --- The configuration file ---------------------------------------------------------------
@@ -988,22 +801,6 @@ def test_at003_read_source_rejects_a_config_that_is_not_a_path(config: object, n
         ReadSource(cast(Any, config))
 
 
-@pytest.mark.parametrize(
-    ("config", "name"),
-    [
-        (JsonLinesWriter("/data/out/orders.jsonl"), "JsonLinesWriter"),
-        (b"job.json", "bytes"),
-        ({"target": {"system": "json_lines", "path": "/data/out/orders.jsonl"}}, "dict"),
-    ],
-    ids=["JsonLinesWriter", "bytes", "dict"],
-)
-def test_at003_write_target_rejects_a_config_that_is_not_a_path(config: object, name: str) -> None:
-    with pytest.raises(
-        TypeError, match=_exactly(f"config must be a str or os.PathLike, not {name}")
-    ):
-        WriteTarget(cast(Any, config))
-
-
 @pytest.mark.parametrize("kind", ["str", "Path"])
 def test_at003_a_str_and_a_path_naming_a_valid_file_are_accepted(
     kind: str, api_url: str, payload: list[dict[str, Any]], tmp_path: Path
@@ -1012,12 +809,9 @@ def test_at003_a_str_and_a_path_naming_a_valid_file_are_accepted(
     path = _config(tmp_path, _json_job(api_url, out))
     config: str | Path = os.fspath(path) if kind == "str" else path
 
-    process = Process(
-        [Step("extract", [ReadSource(config)]), Step("load", [WriteTarget(config)])]
-    ).run()
+    process = Process([Step("extract", [ReadSource(config)])]).run()
 
     assert process.state["records"] == payload
-    assert _lines(out) == payload
 
 
 @SECTIONS
@@ -1113,27 +907,17 @@ def test_at008_read_source_ignores_the_target_section_and_other_top_level_member
     assert Process([Step("extract", [read])]).run().state["records"] == payload
 
 
-def test_at008_write_target_ignores_the_source_section(tmp_path: Path) -> None:
-    out = tmp_path / "out" / "orders.jsonl"
-    path = _config(tmp_path, {"source": 5, "target": {"system": "json_lines", "path": str(out)}})
-
-    write = WriteTarget(path)
-
-    Process([Step("load", [write])], state={"records": [{"id": 1}]}).run()
-    assert _lines(out) == [{"id": 1}]
-
-
 def test_at009_deleting_the_file_after_building_changes_nothing(
     api_url: str, payload: list[dict[str, Any]], tmp_path: Path
 ) -> None:
     out = tmp_path / "out" / "orders.jsonl"
     path = _config(tmp_path, _json_job(api_url, out))
-    read, write = ReadSource(path), WriteTarget(path)
+    read = ReadSource(path)
 
     path.unlink()
-    Process([Step("extract", [read]), Step("load", [write])]).run()
+    process = Process([Step("extract", [read])]).run()
 
-    assert _lines(out) == payload
+    assert process.state["records"] == payload
 
 
 def test_at009_rewriting_the_file_after_building_changes_nothing(
@@ -1171,8 +955,7 @@ def test_at010_a_relative_path_is_resolved_against_the_directory_of_the_moment_o
 def test_at011_a_section_without_system_is_rejected(
     section: str, build: Callable[..., object], tmp_path: Path
 ) -> None:
-    keys = SOURCE_REQUIRED["json_api"] if section == "source" else TARGET_REQUIRED["json_lines"]
-    path = _config(tmp_path, {section: dict(keys)})
+    path = _config(tmp_path, {section: dict(SOURCE_REQUIRED["json_api"])})
 
     with pytest.raises(ValueError, match=_exactly(f"{path}: {section}.system is required")):
         build(path)
@@ -1196,19 +979,14 @@ def test_at011_a_system_that_is_not_a_string_is_rejected(
         ("source", "Postgres"),
         ("source", "json_lines"),
         ("source", ""),
-        ("target", "mysql"),
-        ("target", "BigQuery"),
-        ("target", "json_api"),
-        ("target", ""),
     ],
 )
 def test_at012_a_system_that_is_not_a_name_of_the_section_is_rejected(
     section: str, system: str, tmp_path: Path
 ) -> None:
     path = _config(tmp_path, {section: {"system": system}})
-    names = SOURCE_NAMES if section == "source" else TARGET_NAMES
 
-    message = f"{path}: {section}.system '{system}' is not one of: {names}"
+    message = f"{path}: {section}.system '{system}' is not one of: {SOURCE_NAMES}"
     with pytest.raises(ValueError, match=_exactly(message)):
         BUILD[section](path)
 
@@ -1223,10 +1001,6 @@ EXTRA_VALUES: dict[str, object] = {
     "client": "default",
     "watermark_column": "updated_at",
     "billing_project": "acme-billing",
-    "append": True,
-    "replace": True,
-    "mode": "overwrite",
-    "watermark_pattern": GCS_PATTERN,
 }
 
 AT013_ROWS = [
@@ -1247,13 +1021,6 @@ AT013_ROWS = [
     ("source", "json_api", "watermark_value"),
     ("source", "json_api", "spark"),
     ("source", "unity_catalog", "billing_project"),
-    ("target", "json_lines", "append"),
-    ("target", "json_lines", "replace"),
-    ("target", "unity_catalog", "watermark_column"),
-    ("target", "unity_catalog", "mode"),
-    ("target", "unity_catalog", "replace"),
-    ("target", "s3", "client"),
-    ("target", "s3", "watermark_pattern"),
 ]
 
 
@@ -1291,7 +1058,7 @@ def test_at013_of_two_such_keys_the_first_in_the_file_is_named(
 
 @pytest.mark.parametrize(
     ("section", "system", "key"),
-    [("source", "postgres", "primary_key"), ("target", "json_lines", "append")],
+    [("source", "postgres", "primary_key")],
 )
 def test_at013_such_a_key_is_named_before_a_missing_required_key(
     section: str, system: str, key: str, tmp_path: Path
@@ -1381,11 +1148,6 @@ AT015_ROWS: list[tuple[str, dict[str, object], str]] = [
         {**SOURCE_REQUIRED["disk"], "system": "disk", "options": {"header": [True]}},
         f"source.options {OPTIONS_TYPE}",
     ),
-    (
-        "target",
-        {"system": "unity_catalog", "table_name": "main.silver.orders", "options": "mergeSchema"},
-        f"target.options {OPTIONS_TYPE}",
-    ),
 ]
 
 
@@ -1458,13 +1220,6 @@ AT017_ROWS: list[tuple[str, str, str]] = [
     ],
     ("source", "postgres", "client"),
     *[("source", system, "connection") for system in ("s3", "gcs", "volume", "bigquery")],
-    *[
-        ("target", system, argument)
-        for system in ("json_lines", "disk", "s3", "gcs", "volume", "unity_catalog")
-        for argument in ("connection", "client")
-    ],
-    ("target", "postgres", "client"),
-    ("target", "bigquery", "connection"),
 ]
 
 
@@ -1574,22 +1329,6 @@ def test_at018_a_source_value_the_connector_rejects_raises_its_error_with_one_no
     _assert_connector_error(excinfo.value, built_directly.value, note)
 
 
-def test_at018_a_target_value_the_connector_rejects_raises_its_error_with_one_note(
-    tmp_path: Path,
-) -> None:
-    keys = {"system": "bigquery", "table_name": "acme-data.lake.orders", "options": {"table": "x"}}
-    path = _config(tmp_path, {"target": keys})
-    with pytest.raises(ValueError) as built_directly:
-        BigQueryWriter("acme-data.lake.orders", options={"table": "x"})
-
-    with pytest.raises(ValueError) as excinfo:
-        WriteTarget(path)
-
-    assert str(excinfo.value) == "option 'table' is set by the connector"
-    note = f"while building the target of {path}, system 'bigquery'"
-    _assert_connector_error(excinfo.value, built_directly.value, note)
-
-
 AT019_CODE = """
 import json
 import sys
@@ -1603,20 +1342,19 @@ except ImportError:
 else:
     raise AssertionError(f"{missing} can be imported")
 
-from ingestio import ReadSource, WriteTarget
+from ingestio import ReadSource
 from ingestio.connector.all import PostgresConnection
 
 conn = PostgresConnection("db.internal", "shop", "ingest", "s3cret")
 outcomes = []
-for callback, config, arguments in cases:
-    build = ReadSource if callback == "ReadSource" else WriteTarget
+for config, arguments in cases:
     given = {}
     if "connection" in arguments:
         given["connection"] = conn
     if "client" in arguments:
         given["client"] = object()
     try:
-        build(config, **given)
+        ReadSource(config, **given)
     except Exception as error:
         outcomes.append([type(error).__name__, str(error), getattr(error, "__notes__", [])])
     else:
@@ -1624,7 +1362,7 @@ for callback, config, arguments in cases:
 print(json.dumps(outcomes))
 """
 
-_Case: TypeAlias = tuple[str, dict[str, object], tuple[str, ...]]
+_Case: TypeAlias = tuple[dict[str, object], tuple[str, ...]]
 
 S3_SECTION = {"system": "s3", "path": S3_SOURCE, "format": "json"}
 GCS_SECTION = {"system": "gcs", "path": GCS_SOURCE, "format": "json"}
@@ -1633,22 +1371,17 @@ VOLUME_SECTION = {"system": "volume", **SOURCE_REQUIRED["volume"]}
 AT019_RAISES: dict[str, list[tuple[_Case, str]]] = {
     "boto3": [
         (
-            ("ReadSource", {"source": S3_SECTION}, ()),
+            ({"source": S3_SECTION}, ()),
             "S3Reader needs boto3: pip install 'ingestio[s3]'",
         ),
     ],
     "google": [
         (
-            ("ReadSource", {"source": GCS_SECTION}, ()),
+            ({"source": GCS_SECTION}, ()),
             "GcsReader needs google-cloud-storage: pip install 'ingestio[gcs]'",
         ),
         (
-            ("WriteTarget", {"target": {"system": "bigquery", **TARGET_REQUIRED["bigquery"]}}, ()),
-            "BigQueryWriter needs google-cloud-bigquery: pip install 'ingestio[bigquery]'",
-        ),
-        (
             (
-                "ReadSource",
                 {
                     "source": {
                         "system": "bigquery",
@@ -1663,35 +1396,20 @@ AT019_RAISES: dict[str, list[tuple[_Case, str]]] = {
     ],
     "databricks": [
         (
-            ("ReadSource", {"source": VOLUME_SECTION}, ()),
+            ({"source": VOLUME_SECTION}, ()),
             "VolumeReader needs databricks-sdk: pip install 'ingestio[databricks]'",
         ),
     ],
-    "psycopg": [
-        (
-            (
-                "WriteTarget",
-                {"target": {"system": "postgres", **TARGET_REQUIRED["postgres"]}},
-                ("connection",),
-            ),
-            "PostgresWriter needs psycopg: pip install 'ingestio[postgres]'",
-        ),
-    ],
+    # Without psycopg, every source of AT019_BUILDS, the `postgres` one included, still builds.
+    "psycopg": [],
 }
 
 AT019_BUILDS: list[_Case] = [
-    ("ReadSource", {"source": S3_SECTION}, ("client",)),
-    ("ReadSource", {"source": GCS_SECTION}, ("client",)),
-    ("ReadSource", {"source": VOLUME_SECTION}, ("client",)),
-    (
-        "ReadSource",
-        {"source": {"system": "postgres", "table_name": "public.orders"}},
-        ("connection",),
-    ),
-    ("ReadSource", {"source": {"system": "bigquery", **SOURCE_REQUIRED["bigquery"]}}, ()),
-    ("WriteTarget", {"target": {"system": "s3", **TARGET_REQUIRED["s3"]}}, ()),
-    ("WriteTarget", {"target": {"system": "gcs", **TARGET_REQUIRED["gcs"]}}, ()),
-    ("WriteTarget", {"target": {"system": "volume", **TARGET_REQUIRED["volume"]}}, ()),
+    ({"source": S3_SECTION}, ("client",)),
+    ({"source": GCS_SECTION}, ("client",)),
+    ({"source": VOLUME_SECTION}, ("client",)),
+    ({"source": {"system": "postgres", "table_name": "public.orders"}}, ("connection",)),
+    ({"source": {"system": "bigquery", **SOURCE_REQUIRED["bigquery"]}}, ()),
 ]
 
 
@@ -1703,13 +1421,12 @@ def test_at019_a_missing_extra_raises_the_connectors_import_error_with_one_note(
     cases = [case for case, _ in raising] + AT019_BUILDS
     given: list[list[object]] = []
     expected: list[object] = []
-    for number, (callback, document, arguments) in enumerate(cases):
+    for number, (document, arguments) in enumerate(cases):
         path = _config(tmp_path, document, f"job{number}.json")
-        given.append([callback, os.fspath(path), list(arguments)])
+        given.append([os.fspath(path), list(arguments)])
         if number < len(raising):
-            section = "source" if callback == "ReadSource" else "target"
-            system = cast(dict[str, object], document[section])["system"]
-            note = f"while building the {section} of {path}, system '{system}'"
+            system = cast(dict[str, object], document["source"])["system"]
+            note = f"while building the source of {path}, system '{system}'"
             expected.append(["ImportError", raising[number][1], [note]])
         else:
             expected.append(None)
@@ -1740,29 +1457,6 @@ def test_at020_building_a_read_source_touches_no_session_and_no_client(
     path = _config(tmp_path, {"source": {"system": system, **keys}})
 
     ReadSource(path, into="orders", **arguments)
-
-    assert active == []
-    assert world.log.accessed == []
-    assert world.log.calls == []
-
-
-@pytest.mark.parametrize("system", WRITE_SYSTEMS)
-def test_at020_building_a_write_target_touches_no_session_no_client_and_no_database(
-    system: str, conn: PostgresConnection, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    world = _World()
-    active: list[str] = []
-
-    def raising_active() -> NoReturn:
-        active.append("active")
-        raise AssertionError("SparkSession.active was called")
-
-    monkeypatch.setattr(SparkSession, "active", raising_active)
-    monkeypatch.setattr(psycopg, "connect", world.psycopg)
-    keys, arguments, _ = _write_row(system, world, _World(), conn, tmp_path)
-    path = _config(tmp_path, {"target": {"system": system, **keys}})
-
-    WriteTarget(path, key="orders", **arguments)
 
     assert active == []
     assert world.log.accessed == []
@@ -1818,77 +1512,6 @@ def test_at023_optional_keys_left_out_leave_the_readers_defaults(
     assert _transcript(ours.log) == _transcript(theirs.log)
 
 
-# --- Writing ------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("replace", [False, True], ids=["append", "replace"])
-@pytest.mark.parametrize("system", WRITE_SYSTEMS)
-def test_at024_write_target_writes_as_the_writer_the_target_section_names(
-    system: str,
-    replace: bool,
-    conn: PostgresConnection,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    ours, theirs = _World(), _World()
-    keys, arguments, twin = _write_row(system, ours, theirs, conn, tmp_path)
-    path = _config(tmp_path, {"target": {"system": system, **keys}})
-    if replace:
-        arguments["replace"] = True
-
-    monkeypatch.setattr(psycopg, "connect", ours.psycopg)
-    state = {"orders": _frame(ours.frame())}
-    start = datetime.now(UTC)
-    Process([Step("load", [WriteTarget(path, key="orders", **arguments)])], state=state).run()
-    ours_window = (start, datetime.now(UTC))
-
-    monkeypatch.setattr(psycopg, "connect", theirs.psycopg)
-    writer, df = twin(), _frame(theirs.frame())
-    start = datetime.now(UTC)
-    if replace:
-        writer.write(df, replace=True)
-    else:
-        writer.write(df)
-    theirs_window = (start, datetime.now(UTC))
-
-    assert _transcript(ours.log, ours_window) == _transcript(theirs.log, theirs_window)
-
-
-def test_at025_json_lines_appends_by_default(tmp_path: Path) -> None:
-    out = tmp_path / "out" / "orders.jsonl"
-    out.parent.mkdir()
-    out.write_text('{"id": 0}\n', encoding="utf-8")
-    path = _config(tmp_path, {"target": {"system": "json_lines", "path": str(out)}})
-
-    Process([Step("load", [WriteTarget(path)])], state={"records": [{"id": 1}]}).run()
-
-    assert out.read_text(encoding="utf-8").splitlines() == ['{"id": 0}', '{"id": 1}']
-
-
-def test_at025_json_lines_with_replace_holds_only_what_was_written(tmp_path: Path) -> None:
-    out = tmp_path / "out" / "orders.jsonl"
-    out.parent.mkdir()
-    out.write_text('{"id": 0}\n', encoding="utf-8")
-    path = _config(tmp_path, {"target": {"system": "json_lines", "path": str(out)}})
-
-    write = WriteTarget(path, replace=True)
-    Process([Step("load", [write])], state={"records": [{"id": 1}]}).run()
-
-    assert out.read_text(encoding="utf-8").splitlines() == ['{"id": 1}']
-
-
-def test_at025_json_lines_creates_the_directory_and_writes_in_its_encoding(
-    tmp_path: Path,
-) -> None:
-    out = tmp_path / "out" / "orders.jsonl"
-    keys = {"system": "json_lines", "path": str(out), "encoding": "utf-16"}
-    path = _config(tmp_path, {"target": keys})
-
-    Process([Step("load", [WriteTarget(path)])], state={"records": [{"id": 1}]}).run()
-
-    assert out.read_text(encoding="utf-16").splitlines() == ['{"id": 1}']
-
-
 # --- Composition --------------------------------------------------------------------------
 
 
@@ -1898,46 +1521,34 @@ def test_at026_the_payload_goes_through_records_by_default(
     out = tmp_path / "out" / "orders.jsonl"
     path = _config(tmp_path, _json_job(api_url, out))
 
-    process = Process(
-        [Step("extract", [ReadSource(path)]), Step("load", [WriteTarget(path)])]
-    ).run()
+    process = Process([Step("extract", [ReadSource(path)])]).run()
 
     assert process.state == {"records": payload}
-    assert _lines(out) == payload
 
 
-def test_at026_into_and_key_choose_another_state_key(
+def test_at026_into_chooses_another_state_key(
     api_url: str, payload: list[dict[str, Any]], tmp_path: Path
 ) -> None:
     out = tmp_path / "out" / "orders.jsonl"
     path = _config(tmp_path, _json_job(api_url, out))
 
-    process = Process(
-        [
-            Step("extract", [ReadSource(path, into="raw")]),
-            Step("load", [WriteTarget(path, key="raw")]),
-        ]
-    ).run()
+    process = Process([Step("extract", [ReadSource(path, into="raw")])]).run()
 
     assert process.state == {"raw": payload}
-    assert _lines(out) == payload
 
 
-def test_at027_one_file_configures_an_ingestion_from_an_api_to_json_lines(
+def test_at027_one_file_configures_the_read_from_an_api(
     api_url: str, payload: list[dict[str, Any]], tmp_path: Path
 ) -> None:
     out = tmp_path / "bronze" / "orders.jsonl"
     path = _config(tmp_path, _json_job(api_url, out))
 
-    process = Process(
-        [Step("extract", [ReadSource(path)]), Step("load", [WriteTarget(path)])]
-    ).run()
+    process = Process([Step("extract", [ReadSource(path)])]).run()
 
-    assert _lines(out) == payload
-    assert process.state["records"] == _lines(out)
+    assert process.state["records"] == payload
 
 
-def test_at028_each_section_names_its_own_table(tmp_path: Path) -> None:
+def test_at028_read_source_reads_the_table_of_the_source_section(tmp_path: Path) -> None:
     world = _World()
     path = _config(
         tmp_path,
@@ -1947,26 +1558,15 @@ def test_at028_each_section_names_its_own_table(tmp_path: Path) -> None:
         },
     )
 
-    process = Process(
-        [
-            Step("extract", [ReadSource(path, spark=_session(world.spark))]),
-            Step("load", [WriteTarget(path)]),
-        ]
-    ).run()
+    process = Process([Step("extract", [ReadSource(path, spark=_session(world.spark))])]).run()
 
     reads = [call for call in world.log.calls if call.method in ("table", "load")]
-    saves = [call for call in world.log.calls if call.method in ("saveAsTable", "save")]
     assert [(call.method, call.args) for call in reads] == [
         ("table", ("`main`.`bronze`.`orders`",))
     ]
-    assert [(call.method, call.args) for call in saves] == [
-        ("saveAsTable", ("`main`.`silver`.`orders`",))
-    ]
-    (read,), (save,) = reads, saves
+    (read,) = reads
     assert read.result is not None
     assert process.state["records"] is world.log.fakes[read.result]
-    writers = [call.target for call in world.log.calls if call.result == save.target]
-    assert writers[0] == read.result, writers
 
 
 def test_at029_an_error_of_the_read_propagates_unchanged_with_no_note(
@@ -1980,18 +1580,3 @@ def test_at029_an_error_of_the_read_propagates_unchanged_with_no_note(
 
     assert excinfo.value.code == 500
     assert getattr(excinfo.value, "__notes__", []) == []
-
-
-def test_at029_an_error_of_the_write_propagates_unchanged_with_no_note(tmp_path: Path) -> None:
-    world = _World()
-    error = RuntimeError("task failed")
-    keys = {"system": "disk", "path": str(tmp_path / "lake" / "orders"), "format": "parquet"}
-    path = _config(tmp_path, {"target": keys})
-    state = {"records": _frame(world.frame(save_error=error))}
-    process = Process([Step("load", [WriteTarget(path)])], state=state)
-
-    with pytest.raises(RuntimeError) as excinfo:
-        process.run()
-
-    assert excinfo.value is error
-    assert getattr(error, "__notes__", []) == []

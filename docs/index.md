@@ -20,8 +20,8 @@ How the library works and how it is used.
 | Page | Covers |
 |---|---|
 | [concepts/connectors.md](concepts/connectors.md) | `Reader` and `Writer`, using a connector, `JsonApiReader`, `JsonLinesWriter`, the PostgreSQL connectors, `DiskReader`, `DiskWriter`, `S3Reader`, `S3Writer`, `GcsReader`, `GcsWriter`, `VolumeReader`, `VolumeWriter`, `UnityCatalogReader`, `UnityCatalogWriter`, `BigQueryReader`, `BigQueryWriter`, extras. |
-| [concepts/configuration.md](concepts/configuration.md) | The job's JSON configuration file: the `source` and `target` sections, the `system` names, the keys of each system, the callback arguments, append and replace, errors. |
-| [concepts/callbacks.md](concepts/callbacks.md) | `Callback`, sharing data through the state, `ReadSource` and `WriteTarget` (they build their connector from the configuration), cancellation. |
+| [concepts/configuration.md](concepts/configuration.md) | The job's JSON configuration file: the `source` and `target` sections, the `system` names, the keys of each system, the callback arguments, append and replace (the callback chooses), errors. |
+| [concepts/callbacks.md](concepts/callbacks.md) | `Callback`, sharing data through the state, `ReadSource`, `AppendOnly` and `FullLoad` (they build their connector from the configuration), cancellation. |
 | [concepts/criticality.md](concepts/criticality.md) | Essential and non-essential callbacks. Not implemented yet. |
 | [concepts/lifecycle.md](concepts/lifecycle.md) | Building and running a process, the three passes of a step, failure, logging. |
 
@@ -46,7 +46,8 @@ Architecture decision records, in [decisions/](decisions/), written from
 | [0012](decisions/0012-streaming-deferred.md) | Defer streaming, and record what affects it | accepted |
 | [0013](decisions/0013-connector-configuration-convention.md) | Give a connector an ingestion's parameters as constructor arguments | accepted, amended by 0015 |
 | [0014](decisions/0014-create-a-missing-target-only-when-derived-from-the-data.md) | Create a missing target only in the form the system derives from the data | accepted |
-| [0015](decisions/0015-choose-connectors-from-the-job-configuration.md) | Choose the reader and the writer from the job's configuration file | accepted |
+| [0015](decisions/0015-choose-connectors-from-the-job-configuration.md) | Choose the reader and the writer from the job's configuration file | accepted, amended by 0016 |
+| [0016](decisions/0016-make-each-write-strategy-one-callback.md) | Make each write strategy one callback | accepted |
 
 ## Specs
 
@@ -55,7 +56,7 @@ One spec per change to `src/`, in [`specs/`](../specs/), written from
 
 | Spec | Covers |
 |---|---|
-| [append_only_callback.md](../specs/append_only_callback.md) | The append-only default callback. |
+| [append_only_callback.md](../specs/append_only_callback.md) | Write strategies as callbacks: `AppendOnly` and `FullLoad` replace `WriteTarget`, and `JsonLinesWriter` gets `write(data, *, replace=False)`. |
 | [scd2_callback.md](../specs/scd2_callback.md) | The SCD2 default callback. |
 | [run_progress_log.md](../specs/run_progress_log.md) | The tree-shaped progress log of a run and `log_to_console`. |
 | [postgres_connectors.md](../specs/postgres_connectors.md) | The PostgreSQL reader and writer, and the `ingestio[postgres]` extra. |
@@ -65,7 +66,7 @@ One spec per change to `src/`, in [`specs/`](../specs/), written from
 | [volume_connectors.md](../specs/volume_connectors.md) | The Databricks volume reader and writer, listed with the Databricks SDK's Files API, and the `ingestio[databricks]` extra. |
 | [unity_catalog_connectors.md](../specs/unity_catalog_connectors.md) | The Unity Catalog reader and writer: Delta tables by their three-part name, a watermark filter in the table's scan, a table created when missing. |
 | [bigquery_connectors.md](../specs/bigquery_connectors.md) | The BigQuery reader and writer: a watermark filter in the Storage Read API with a frozen bound, an atomic write through a staging table, and the `ingestio[bigquery]` extra. |
-| [config_connectors.md](../specs/config_connectors.md) | `ReadSource` and `WriteTarget` choose the reader and the writer from the job's JSON configuration, through a closed table of the shipped connectors. |
+| [config_connectors.md](../specs/config_connectors.md) | `ReadSource` and the write callback (since replaced by `AppendOnly` and `FullLoad`) choose the reader and the writer from the job's JSON configuration, through a closed table of the shipped connectors. |
 
 ## Agent tooling
 
