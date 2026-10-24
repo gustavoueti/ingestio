@@ -14,8 +14,8 @@ your processing is batch. Those are things you build with it, not things it impo
 pip install ingestio
 ```
 
-No runtime dependencies. An integration that needs one is an optional extra (`postgres`,
-`s3`, `gcs`, `databricks`, `bigquery`), such as `pip install 'ingestio[postgres]'`.
+No runtime dependencies. A connector that needs a third-party package takes it from an optional
+extra, such as `pip install 'ingestio[postgres]'`; the [connectors](#connectors) table says which.
 
 ## The idea
 
@@ -31,13 +31,43 @@ Steps run in list order, and callbacks inside a step run in list order. There is
 priority attribute and no hidden reordering: the sequence you write is the sequence that
 runs.
 
-The library ships the engine, the connectors (a JSON API reader, a JSON Lines writer, and
-readers and writers for PostgreSQL, files on disk, Amazon S3, Google Cloud Storage, Databricks
-volumes, Unity Catalog tables and BigQuery) and four generic callbacks: `ReadSource` reads the
-source, `AppendOnly` appends to the target, `FullLoad` replaces what it holds and `SCD2` keeps
-the history of a dimension. A job names its source and its target in a JSON file, and those
-callbacks build the matching connector. The
-stages that are specific to your ingestion are yours to write — that is the point.
+The library ships the engine, the [connectors](#connectors) and four generic callbacks:
+`ReadSource` reads the source, `AppendOnly` appends to the target, `FullLoad` replaces what it
+holds and `SCD2` keeps the history of a dimension. A job names its source and its target in a
+JSON file, and those callbacks build the matching connector. The stages that are specific to
+your ingestion are yours to write — that is the point.
+
+## Connectors
+
+Every connector ships with the library. A job picks one by naming its `system` in the `source` or
+`target` section of its configuration, with nothing to register. The list is closed: a new system
+is a change to the library, and this table grows with it.
+
+| System | `system` | Reader | Writer | Spark | Extra |
+|---|---|---|---|---|---|
+| [JSON API](docs/concepts/connectors.md#jsonapireader) | `json_api` | `JsonApiReader` | — | no | — |
+| [JSON Lines file](docs/concepts/connectors.md#jsonlineswriter) | `json_lines` | — | `JsonLinesWriter` | no | — |
+| [Files on disk](docs/concepts/connectors.md#disk-diskreader-diskwriter) | `disk` | `DiskReader` | `DiskWriter` | yes | — |
+| [PostgreSQL](docs/concepts/connectors.md#postgresql-postgresconnection-postgresreader-postgreswriter) | `postgres` | `PostgresReader` | `PostgresWriter` | yes | `postgres`, for the writer |
+| [Amazon S3](docs/concepts/connectors.md#s3-s3reader-s3writer) | `s3` | `S3Reader` | `S3Writer` | yes | `s3`, for a reader without `client` |
+| [Google Cloud Storage](docs/concepts/connectors.md#gcs-gcsreader-gcswriter) | `gcs` | `GcsReader` | `GcsWriter` | yes | `gcs`, for a reader without `client` |
+| [Databricks volumes](docs/concepts/connectors.md#volumes-volumereader-volumewriter) | `volume` | `VolumeReader` | `VolumeWriter` | yes | `databricks`, for a reader without `client` |
+| [Unity Catalog tables](docs/concepts/connectors.md#unity-catalog-unitycatalogreader-unitycatalogwriter) | `unity_catalog` | `UnityCatalogReader` | `UnityCatalogWriter` | yes | — |
+| [BigQuery](docs/concepts/connectors.md#bigquery-bigqueryreader-bigquerywriter) | `bigquery` | `BigQueryReader` | `BigQueryWriter` | yes | `bigquery`, for the writer, and for a reader with `watermark_column` |
+
+- **Spark:** the connector reads into a Spark DataFrame and writes from one. It expects a Spark
+  session to be running already, and never starts one: Databricks provides it; elsewhere, create
+  it before the process runs, for example with `SparkSession.builder.getOrCreate()`. Some systems
+  also need a package in that session, such as the PostgreSQL JDBC driver or Delta Lake on
+  open-source Spark: the system's link gives its environments and prerequisites.
+- **Extra:** installed with `pip install 'ingestio[<extra>]'`, and needed only in the case the
+  column names. pyspark is never an extra: the runtime provides it.
+- The keys each system takes are in
+  [docs/concepts/configuration.md](docs/concepts/configuration.md#systems-and-keys). `SCD2` writes
+  only to `unity_catalog`, `postgres` and `bigquery`.
+- The classes are importable from `ingestio.connector.all`, as `PostgresConnection` is in
+  [Structuring a job](#structuring-a-job).
+- The connectors planned next are in the [roadmap](#roadmap).
 
 ## Design philosophy
 
@@ -285,12 +315,9 @@ Process([
   [docs/concepts/configuration.md](docs/concepts/configuration.md).
 
 These two files are the whole job, and they run anywhere: in a container, as a Databricks job,
-on a laptop. The connectors built on Spark, every reader and writer except the JSON ones, expect
-a Spark session to be running already, and never start one. Databricks provides it; elsewhere,
-create it before the process runs, for example with `SparkSession.builder.getOrCreate()`. The
-rest of the library is plain Python. Some connectors also need their system's extra, such as `postgres`
-for the PostgreSQL writer or `bigquery` for the BigQuery writer; the requirements of each
-connector are in [docs/concepts/connectors.md](docs/concepts/connectors.md).
+on a laptop, as long as the environment has what the job's connectors need. The
+[connectors](#connectors) table says which ones need a running Spark session and which need an
+extra; the rest of the library is plain Python.
 
 ## Keeping the history of a dimension
 
