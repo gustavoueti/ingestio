@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.5.0 (2026-10-24)
+
+### Features
+
+- **callback**: Add SCD2 to keep the history of a dimension
+  ([#15](https://github.com/gustavoueti/ingestio/pull/15),
+  [`5e31c4a`](https://github.com/gustavoueti/ingestio/commit/5e31c4ae097aebc4ba92fb6ba5b5aa8af0668a0d))
+
+
 ## v0.4.0 (2026-10-24)
 
 ### Documentation
