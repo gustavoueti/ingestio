@@ -20,8 +20,8 @@ How the library works and how it is used.
 | Page | Covers |
 |---|---|
 | [concepts/connectors.md](concepts/connectors.md) | `Reader` and `Writer`, using a connector, `JsonApiReader`, `JsonLinesWriter`, the PostgreSQL connectors, `DiskReader`, `DiskWriter`, `S3Reader`, `S3Writer`, `GcsReader`, `GcsWriter`, `VolumeReader`, `VolumeWriter`, `UnityCatalogReader`, `UnityCatalogWriter`, `BigQueryReader`, `BigQueryWriter`, extras. |
-| [concepts/configuration.md](concepts/configuration.md) | The job's JSON configuration file: the `source` and `target` sections, the `system` names, the keys of each system, the callback arguments, append and replace (the callback chooses), errors. |
-| [concepts/callbacks.md](concepts/callbacks.md) | `Callback`, sharing data through the state, `ReadSource`, `AppendOnly` and `FullLoad` (they build their connector from the configuration), cancellation. |
+| [concepts/configuration.md](concepts/configuration.md) | The job's JSON configuration file: the `source` and `target` sections, the `system` names, the keys of each system, the callback arguments, append and replace (the callback chooses), the `scd2` section, errors. |
+| [concepts/callbacks.md](concepts/callbacks.md) | `Callback`, sharing data through the state, `ReadSource`, `AppendOnly`, `FullLoad` and `SCD2` (they build their connector from the configuration), the SCD2 checks, target systems and limitations, cancellation. |
 | [concepts/criticality.md](concepts/criticality.md) | Essential and non-essential callbacks. Not implemented yet. |
 | [concepts/lifecycle.md](concepts/lifecycle.md) | Building and running a process, the three passes of a step, failure, logging. |
 
@@ -46,8 +46,9 @@ Architecture decision records, in [decisions/](decisions/), written from
 | [0012](decisions/0012-streaming-deferred.md) | Defer streaming, and record what affects it | accepted |
 | [0013](decisions/0013-connector-configuration-convention.md) | Give a connector an ingestion's parameters as constructor arguments | accepted, amended by 0015 |
 | [0014](decisions/0014-create-a-missing-target-only-when-derived-from-the-data.md) | Create a missing target only in the form the system derives from the data | accepted |
-| [0015](decisions/0015-choose-connectors-from-the-job-configuration.md) | Choose the reader and the writer from the job's configuration file | accepted, amended by 0016 |
+| [0015](decisions/0015-choose-connectors-from-the-job-configuration.md) | Choose the reader and the writer from the job's configuration file | accepted, amended by 0016, 0017 |
 | [0016](decisions/0016-make-each-write-strategy-one-callback.md) | Make each write strategy one callback | accepted |
+| [0017](decisions/0017-read-a-library-callbacks-own-parameters-from-a-section-named-after-it.md) | Read a library callback's own parameters from a section named after it | accepted |
 
 ## Specs
 
@@ -57,7 +58,7 @@ One spec per change to `src/`, in [`specs/`](../specs/), written from
 | Spec | Covers |
 |---|---|
 | [append_only_callback.md](../specs/append_only_callback.md) | Write strategies as callbacks: `AppendOnly` and `FullLoad` replace `WriteTarget`, and `JsonLinesWriter` gets `write(data, *, replace=False)`. |
-| [scd2_callback.md](../specs/scd2_callback.md) | The SCD2 default callback. |
+| [scd2_callback.md](../specs/scd2_callback.md) | `SCD2`, the callback that keeps the history of a dimension: the top-level `scd2` section of the configuration, an atomic rewrite on `unity_catalog`, `postgres` and `bigquery`, four checks before the write, and the opt-in tests that need Spark. |
 | [run_progress_log.md](../specs/run_progress_log.md) | The tree-shaped progress log of a run and `log_to_console`. |
 | [postgres_connectors.md](../specs/postgres_connectors.md) | The PostgreSQL reader and writer, and the `ingestio[postgres]` extra. |
 | [disk_connectors.md](../specs/disk_connectors.md) | The disk reader and writer: Spark file sources, selection by watermark before loading. |

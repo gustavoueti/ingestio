@@ -63,6 +63,11 @@ implemented. Every criterion `AT-001`, `AT-002`, ... has at least one test named
 same criterion number in two specs never collides. At the end of this stage the new tests
 fail for the expected reason, the missing feature, and not because of a mistake in the tests.
 
+A spec may make the tests of some criteria opt-in, because they need something the stage cannot
+run, such as a Spark session. Those tests are collected and skipped where the stage runs. The
+test-writer shows that they are collected and skipped for the reason the spec gives, and that the
+other tests fail for the missing feature.
+
 ### Documentation
 
 The doc-keeper documents the feature from the spec and the tests, the way it will be used:
@@ -77,13 +82,17 @@ on its own, because it calls a network service for instance, carries
 
 The implementer reads the spec, the tests and the documentation before starting, and writes
 code in `src/` until every test passes and the behaviour matches what the documentation
-describes. It never changes tests or documentation to accommodate the implementation.
+describes. It never changes tests or documentation to accommodate the implementation. A test that
+the spec makes opt-in and that is skipped where the implementer runs does not count: the
+implementer cannot run it, and the criterion is verified in CI.
 
 ### Validation
 
 The acceptance-validator fails the change when:
 
-- an acceptance criterion has no passing test;
+- an acceptance criterion has no passing test, except a criterion whose tests the spec makes
+  opt-in and which are skipped where the validation runs: it is reported as not run, with the
+  reason, and does not fail the validation (see below);
 - the implementation diverges from the documentation: examples, signatures, described
   behaviour;
 - the philosophy or the constraints in [AGENTS.md](../AGENTS.md#constraints) were violated;
@@ -92,6 +101,11 @@ The acceptance-validator fails the change when:
 It runs the documentation examples as part of the test suite
 (`tests/test_docs_examples.py`). When it fails a change, it says which stage the change goes
 back to.
+
+**Skipped opt-in criteria.** A criterion whose tests the spec makes opt-in, and which are skipped
+where the stage runs, is reported as not run and does not fail the validation: the report lists
+each one. CI runs it after the maintainer pushes, and a failure there returns the change to the
+stage it names, as any validation failure does.
 
 ## Returns
 

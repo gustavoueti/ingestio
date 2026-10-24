@@ -28,7 +28,7 @@ library's read and write callbacks build the matching connector
 
 A stage of the pipeline that performs an action: formatting, applying medallion layers, CDC
 replication, write strategies (append, merge, SCD2). Callbacks generic enough to serve many
-pipelines live in `ingestio.callback` and are part of the library; append-only and SCD2 will
+pipelines live in `ingestio.callback` and are part of the library; append-only and SCD2 are
 be its default callbacks. Every other callback is written by whoever uses the library.
 
 A default callback is one the library ships. A process uses it the way it uses any other

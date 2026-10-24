@@ -23,7 +23,7 @@ from ingestio.connector.s3 import S3Reader, S3Writer
 from ingestio.connector.unity_catalog import UnityCatalogReader, UnityCatalogWriter
 from ingestio.connector.volume import VolumeReader, VolumeWriter
 
-__all__ = ["build_connector"]
+__all__ = ["Scd2Plan", "Scd2Settings", "TargetReader", "build_connector", "build_scd2"]
 
 # The order in which the callback arguments are checked.
 _ARGUMENTS = ("connection", "client", "watermark_value", "spark")
@@ -143,6 +143,91 @@ def _well_typed(key: str, value: object) -> bool:
     )
 
 
+def _load(config: str | os.PathLike[str]) -> tuple[str, dict[str, Any]]:
+    """Read `config` and return its path as text and its top-level JSON object."""
+    if not isinstance(config, str | os.PathLike):
+        raise TypeError(f"config must be a str or os.PathLike, not {type(config).__name__}")
+    path = os.fspath(config)
+    text = Path(config).read_text(encoding="utf-8")
+    try:
+        document = json.loads(text, parse_constant=_reject_constant)
+    except _ConstantError as exc:
+        raise _fail(path, f"invalid JSON: {exc.args[0]} is not allowed") from None
+    except json.JSONDecodeError as exc:
+        raise _fail(path, f"invalid JSON: {exc}") from exc
+    if not isinstance(document, dict):
+        raise _fail(path, "the configuration must be a JSON object")
+    return path, document
+
+
+def _fail(path: str, message: str) -> ValueError:
+    return ValueError(f"{path}: {message}")
+
+
+def _section(path: str, document: dict[str, Any], section: str) -> dict[str, Any]:
+    if section not in document:
+        raise _fail(path, f"missing section '{section}'")
+    keys = document[section]
+    if not isinstance(keys, dict):
+        raise _fail(path, f"section '{section}' must be a JSON object")
+    return keys
+
+
+def _build(
+    path: str,
+    document: dict[str, Any],
+    section: str,
+    arguments: Mapping[str, object | None],
+    systems: Mapping[str, _System],
+) -> tuple[Any, str, dict[str, Any], dict[str, object]]:
+    """Check `section` and build its connector.
+
+    Returns the connector, the name of the system, the keys of the section and the callback
+    arguments that the system took.
+    """
+    keys = _section(path, document, section)
+    if "system" not in keys:
+        raise _fail(path, f"{section}.system is required")
+    name = keys["system"]
+    if not isinstance(name, str):
+        raise _fail(path, f"{section}.system must be a string")
+    if name not in systems:
+        names = ", ".join(sorted(systems))
+        raise _fail(path, f"{section}.system '{name}' is not one of: {names}")
+    system = systems[name]
+
+    allowed = (*system.required, *system.optional)
+    for key in keys:
+        if key != "system" and key not in allowed:
+            raise _fail(path, f"{section}.{key} is not a key of system '{name}'")
+    for key in system.required:
+        if key not in keys:
+            raise _fail(path, f"{section}.{key} is required for system '{name}'")
+    for key, value in keys.items():
+        if not _well_typed(key, value):
+            raise _fail(path, f"{section}.{key} must be {_type_error(key)}")
+
+    taken: dict[str, object] = {}
+    for argument in _ARGUMENTS:
+        if argument not in arguments or arguments[argument] is None:
+            continue
+        if argument not in system.arguments:
+            raise _fail(path, f"{section} system '{name}' takes no argument {argument}")
+        taken[argument] = arguments[argument]
+    for argument in system.needed:
+        if argument not in taken:
+            raise _fail(path, f"{section} system '{name}' needs the argument {argument}")
+
+    parameters = {key: value for key, value in keys.items() if key != "system"}
+    parameters.update(taken)
+    try:
+        connector = system.connector(**parameters)
+    except Exception as exc:
+        exc.add_note(f"while building the {section} of {path}, system '{name}'")
+        raise
+    return connector, name, keys, taken
+
+
 def build_connector(
     config: str | os.PathLike[str],
     section: str,
@@ -159,65 +244,134 @@ def build_connector(
         TypeError: `config` is not a path.
         ValueError: The file or the callback arguments do not describe a connector.
     """
-    if not isinstance(config, str | os.PathLike):
-        raise TypeError(f"config must be a str or os.PathLike, not {type(config).__name__}")
-    path = os.fspath(config)
+    path, document = _load(config)
+    return _build(path, document, section, arguments, _SYSTEMS[section])[0]
 
-    def fail(message: str) -> ValueError:
-        return ValueError(f"{path}: {message}")
 
-    text = Path(config).read_text(encoding="utf-8")
-    try:
-        document = json.loads(text, parse_constant=_reject_constant)
-    except _ConstantError as exc:
-        raise fail(f"invalid JSON: {exc.args[0]} is not allowed") from None
-    except json.JSONDecodeError as exc:
-        raise fail(f"invalid JSON: {exc}") from exc
-    if not isinstance(document, dict):
-        raise fail("the configuration must be a JSON object")
-    if section not in document:
-        raise fail(f"missing section '{section}'")
-    keys = document[section]
-    if not isinstance(keys, dict):
-        raise fail(f"section '{section}' must be a JSON object")
+# --- The scd2 section ---------------------------------------------------------------------
 
-    systems = _SYSTEMS[section]
-    if "system" not in keys:
-        raise fail(f"{section}.system is required")
-    name = keys["system"]
-    if not isinstance(name, str):
-        raise fail(f"{section}.system must be a string")
-    if name not in systems:
-        names = ", ".join(sorted(systems))
-        raise fail(f"{section}.system '{name}' is not one of: {names}")
-    system = systems[name]
+# The target systems that SCD2 supports.
+_SCD2_SYSTEMS = MappingProxyType(
+    {name: _TARGETS[name] for name in ("bigquery", "postgres", "unity_catalog")}
+)
+# The keys of the `target` section that the reader of the same system takes as well.
+_READER_KEYS = ("table_name", "billing_project")
 
-    allowed = (*system.required, *system.optional)
+_SCD2_KEYS = (
+    "key_columns",
+    "effective_time_column",
+    "tracked_columns",
+    "valid_from_column",
+    "valid_to_column",
+)
+_SCD2_REQUIRED = ("key_columns", "effective_time_column")
+_SCD2_ARRAYS = ("key_columns", "tracked_columns")
+
+
+@dataclass(frozen=True)
+class Scd2Settings:
+    """The checked `scd2` section, the names as the file writes them."""
+
+    key_columns: tuple[str, ...]
+    effective_time_column: str
+    tracked_columns: tuple[str, ...] | None
+    valid_from_column: str
+    valid_to_column: str
+
+
+@dataclass(frozen=True)
+class TargetReader:
+    """The reader of the target's system: its class and its parameters, but for the session."""
+
+    connector: Callable[..., Any]
+    parameters: Mapping[str, object]
+
+    def build(self, spark: object) -> Any:
+        return self.connector(**self.parameters, spark=spark)
+
+
+@dataclass(frozen=True)
+class Scd2Plan:
+    """What `SCD2` needs from the file: the writer, the target's reader and the section."""
+
+    writer: Any
+    reader: TargetReader
+    settings: Scd2Settings
+
+
+def _scd2_settings(path: str, document: dict[str, Any]) -> Scd2Settings:
+    section = "scd2"
+    keys = _section(path, document, section)
     for key in keys:
-        if key != "system" and key not in allowed:
-            raise fail(f"{section}.{key} is not a key of system '{name}'")
-    for key in system.required:
+        if key not in _SCD2_KEYS:
+            raise _fail(path, f"{section}.{key} is not a key of section '{section}'")
+    for key in _SCD2_REQUIRED:
         if key not in keys:
-            raise fail(f"{section}.{key} is required for system '{name}'")
+            raise _fail(path, f"{section}.{key} is required")
     for key, value in keys.items():
-        if not _well_typed(key, value):
-            raise fail(f"{section}.{key} must be {_type_error(key)}")
+        if key in _SCD2_ARRAYS:
+            if not (
+                isinstance(value, list)
+                and value
+                and all(isinstance(item, str) and item for item in value)
+            ):
+                raise _fail(path, f"{section}.{key} must be a non-empty array of non-empty strings")
+            seen: set[str] = set()
+            for item in value:
+                if item.lower() in seen:
+                    raise _fail(path, f"{section}.{key} names the column '{item}' twice")
+                seen.add(item.lower())
+        elif not (isinstance(value, str) and value):
+            raise _fail(path, f"{section}.{key} must be a non-empty string")
 
-    taken: dict[str, object] = {}
-    for argument in _ARGUMENTS:
-        if argument not in arguments or arguments[argument] is None:
-            continue
-        if argument not in system.arguments:
-            raise fail(f"{section} system '{name}' takes no argument {argument}")
-        taken[argument] = arguments[argument]
-    for argument in system.needed:
-        if argument not in taken:
-            raise fail(f"{section} system '{name}' needs the argument {argument}")
+    valid_from = keys.get("valid_from_column", "valid_from")
+    valid_to = keys.get("valid_to_column", "valid_to")
+    roles: list[tuple[str, list[str]]] = [
+        ("key_columns", keys["key_columns"]),
+        ("effective_time_column", [keys["effective_time_column"]]),
+    ]
+    if "tracked_columns" in keys:
+        roles.append(("tracked_columns", keys["tracked_columns"]))
+    roles.append(("valid_from_column", [valid_from]))
+    roles.append(("valid_to_column", [valid_to]))
+    for index, (role, names) in enumerate(roles):
+        for later, later_names in roles[index + 1 :]:
+            lowered = {item.lower() for item in later_names}
+            for item in names:
+                if item.lower() in lowered:
+                    raise _fail(
+                        path,
+                        f"{section}.{role} and {section}.{later} both name the column '{item}'",
+                    )
 
-    parameters = {key: value for key, value in keys.items() if key != "system"}
+    tracked = keys.get("tracked_columns")
+    return Scd2Settings(
+        key_columns=tuple(keys["key_columns"]),
+        effective_time_column=keys["effective_time_column"],
+        tracked_columns=None if tracked is None else tuple(tracked),
+        valid_from_column=valid_from,
+        valid_to_column=valid_to,
+    )
+
+
+def build_scd2(config: str | os.PathLike[str], arguments: Mapping[str, object | None]) -> Scd2Plan:
+    """Read `config` once: build the writer of its `target` and check its `scd2` section.
+
+    Args:
+        config: Path of the JSON configuration file.
+        arguments: The callback arguments `connection` and `client`, `None` for the ones not
+            given.
+
+    Raises:
+        TypeError: `config` is not a path.
+        ValueError: The file or the callback arguments do not describe a writer, or the `scd2`
+            section is wrong.
+    """
+    path, document = _load(config)
+    writer, name, keys, taken = _build(path, document, "target", arguments, _SCD2_SYSTEMS)
+    settings = _scd2_settings(path, document)
+    parameters: dict[str, object] = {
+        key: value for key, value in keys.items() if key in _READER_KEYS
+    }
     parameters.update(taken)
-    try:
-        return system.connector(**parameters)
-    except Exception as exc:
-        exc.add_note(f"while building the {section} of {path}, system '{name}'")
-        raise
+    return Scd2Plan(writer, TargetReader(_SOURCES[name].connector, parameters), settings)

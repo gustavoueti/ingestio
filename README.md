@@ -33,9 +33,10 @@ runs.
 
 The library ships the engine, the connectors (a JSON API reader, a JSON Lines writer, and
 readers and writers for PostgreSQL, files on disk, Amazon S3, Google Cloud Storage, Databricks
-volumes, Unity Catalog tables and BigQuery) and three generic callbacks: `ReadSource` reads the
-source, `AppendOnly` appends to the target and `FullLoad` replaces what it holds. A job names its
-source and its target in a JSON file, and those callbacks build the matching connector. The
+volumes, Unity Catalog tables and BigQuery) and four generic callbacks: `ReadSource` reads the
+source, `AppendOnly` appends to the target, `FullLoad` replaces what it holds and `SCD2` keeps
+the history of a dimension. A job names its source and its target in a JSON file, and those
+callbacks build the matching connector. The
 stages that are specific to your ingestion are yours to write — that is the point.
 
 ## Design philosophy
@@ -196,9 +197,9 @@ orders_job/
 ```
 
 `config.json` names the source and the target of the ingestion. `ReadSource` reads its
-`source` section, and `AppendOnly` and `FullLoad` its `target` section; each builds the connector
-that the section's `system` names, with the section's other keys as the connector's arguments.
-Credentials never go in it.
+`source` section, and `AppendOnly`, `FullLoad` and `SCD2` its `target` section; each builds the
+connector that the section's `system` names, with the section's other keys as the connector's
+arguments. Credentials never go in it.
 
 ```json
 {
@@ -272,8 +273,9 @@ Process([
   in its place replaces what the target holds.
 - The connection, with its credentials, and the run's watermark are arguments of the
   callbacks, not keys of the file: they are not JSON, and the library reads no secret.
-- `primary_key` is a parameter of the job: both callbacks ignore every top-level member other
-  than their own section, so it is there for the job's own callbacks, such as a merge. Inside
+- `primary_key` is a parameter of the job: the library's callbacks ignore every top-level member
+  other than their own sections, so it is there for the job's own callbacks, such as a merge. The
+  library reserves only `source`, `target` and `scd2`, the section of `SCD2`'s parameters. Inside
   a section, a key the system does not take is an error, so a typo such as `watermark_colum`
   stops the job before anything runs.
 - Moving the target is an edit of its section, such as
@@ -290,9 +292,45 @@ rest of the library is plain Python. Some connectors also need their system's ex
 for the PostgreSQL writer or `bigquery` for the BigQuery writer; the requirements of each
 connector are in [docs/concepts/connectors.md](docs/concepts/connectors.md).
 
+## Keeping the history of a dimension
+
+`SCD2` writes a dimension, such as customers or products, as a slowly changing dimension of
+type 2: when a tracked column of an entity changes, it closes the entity's current version and
+opens a new one, so every past state stays queryable. Its parameters go in an `scd2` section of
+the same file:
+
+```json
+{
+  "source": {"system": "postgres", "table_name": "public.customers", "watermark_column": "updated_at"},
+  "target": {"system": "unity_catalog", "table_name": "main.gold.dim_customer"},
+  "scd2": {
+    "key_columns": ["customer_id"],
+    "effective_time_column": "updated_at",
+    "tracked_columns": ["name", "city", "segment"]
+  }
+}
+```
+
+In `main.py`, `SCD2(CONFIG)` takes the place of `AppendOnly(CONFIG)`, with the same arguments.
+
+- Each version carries `valid_from` and `valid_to`, taken from the effective-time column; the
+  current version has a null `valid_to`. Closed versions never change.
+- Several records of one entity in a batch each become a version, in the order of their
+  effective time. A record older than the entity's current version fails the run before anything
+  is written.
+- An entity absent from the batch keeps its current version: deletes in the source are not
+  detected.
+- Every run rewrites the whole dimension, atomically, on `unity_catalog`, `postgres` and
+  `bigquery`. The target must exist before the first run, with the batch's columns plus the two
+  version columns.
+
+The whole behaviour, the checks and the errors are in
+[docs/concepts/callbacks.md](docs/concepts/callbacks.md#scd2), and the `scd2` section in
+[docs/concepts/configuration.md](docs/concepts/configuration.md#the-scd2-section).
+
 ## Roadmap
 
-More connectors (MySQL with change data capture, MongoDB), and the SCD2 write callback.
+More connectors (MySQL with change data capture, MongoDB).
 
 ## License
 
