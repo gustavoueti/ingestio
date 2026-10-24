@@ -83,8 +83,10 @@ secrets, its environment or its control tables, and passes them as arguments of 
 The callback hands each one, the very object, to the connector's constructor argument of the same
 name. The library still reads no secret.
 
-- `connection`: a [`PostgresConnection`](connectors.md#postgresconnection), required by the
-  `postgres` system.
+- `connection`: the connection value of each system that takes one, required by it: a
+  [`PostgresConnection`](connectors.md#postgresconnection) for `postgres`, and a
+  [`MongoDBConnection`](connectors.md#mongodbconnection) for `mongodb`. The callback checks its
+  type when it is built, see [Errors](#errors).
 - `client`: the SDK client of the system, for the systems that take one.
 - `watermark_value`: the last watermark already ingested. `ReadSource` only.
 - `spark`: the session to read with. `ReadSource` only, for the Spark systems; the active session
@@ -94,7 +96,8 @@ name. The library still reads no secret.
 |---|---|---|---|---|---|
 | `json_api` | source | no | no | no | no |
 | `disk` | source | no | no | optional | optional |
-| `postgres` | source | **required** | no | optional | optional |
+| `postgres` | source | **required**: a `PostgresConnection` | no | optional | optional |
+| `mongodb` | source | **required**: a `MongoDBConnection` | no | optional | optional |
 | `s3` | source | no | optional: a boto3 S3 client | optional | optional |
 | `gcs` | source | no | optional: a `google.cloud.storage.Client` | optional | optional |
 | `volume` | source | no | optional: a `databricks.sdk.WorkspaceClient` | optional | optional |
@@ -102,7 +105,7 @@ name. The library still reads no secret.
 | `bigquery` | source | no | optional: a `google.cloud.bigquery.Client` | optional | optional |
 | `json_lines` | target | no | no | – | – |
 | `disk`, `s3`, `gcs`, `volume`, `unity_catalog` | target | no | no | – | – |
-| `postgres` | target | **required** | no | – | – |
+| `postgres` | target | **required**: a `PostgresConnection` | no | – | – |
 | `bigquery` | target | no | optional: a `google.cloud.bigquery.Client` | – | – |
 
 - An argument that is `None` is not given, for every system. A job that passes
@@ -126,6 +129,7 @@ can add to it or replace an entry, and it is not exported. A new system is a cha
 | `json_lines` | not a source | `JsonLinesWriter` | none |
 | `disk` | `DiskReader` | `DiskWriter` | none |
 | `postgres` | `PostgresReader` | `PostgresWriter` | `postgres`, for the writer |
+| `mongodb` | `MongoDBReader` | not a target | none |
 | `s3` | `S3Reader` | `S3Writer` | `s3`, for a reader without `client` |
 | `gcs` | `GcsReader` | `GcsWriter` | `gcs`, for a reader without `client` |
 | `volume` | `VolumeReader` | `VolumeWriter` | `databricks`, for a reader without `client` |
@@ -142,6 +146,7 @@ The keys of a section, besides `system`:
 | `disk` | target | `path`, `format` | `options` |
 | `postgres` | source | `table_name` | `watermark_column`, `options` |
 | `postgres` | target | `table_name` | `options` |
+| `mongodb` | source | `database`, `collection` | `watermark_column`, `schema_hints`, `options` |
 | `s3` | source | `path`, `format` | `watermark_pattern`, `schema`, `options` |
 | `s3` | target | `path`, `format` | `options` |
 | `gcs` | source | `path`, `format` | `watermark_pattern`, `schema`, `options` |
@@ -156,8 +161,15 @@ The keys of a section, besides `system`:
 - The required keys are the connector's positional arguments other than `connection`. A key that
   is left out leaves the argument at its default.
 - Not keys: the callback arguments above (`connection`, `client`, `watermark_value`, `spark`),
-  `append`, `replace` and `mode`, and any credential, such as `user`, `password` or `host`. Like
-  any other key a system does not take, they are rejected.
+  `append`, `replace` and `mode`, and any credential, such as `user`, `password`, `host` or the
+  connection string `uri` of `mongodb`. Like any other key a system does not take, they are
+  rejected.
+- `schema_hints` of `mongodb` is a DDL string of the types of known fields, such as
+  `"updatedAt TIMESTAMP, total DECIMAL(18,2)"`; Spark infers the other fields. It is not the
+  `schema` key of the file systems, and there is no JSON form of it.
+  See [Schema hints](connectors.md#schema-hints).
+- `mongodb` is a source only: `{"target": {"system": "mongodb", ...}}` raises the error of a system
+  that is not a target.
 - `schema` is a DDL string, such as `"id INT, payload STRING"`. A `StructType` cannot be given
   through `ReadSource`.
 - `headers` of `json_api` is not a place for credentials: `JsonApiReader` does not support
@@ -175,7 +187,7 @@ parses them, `int` or `float`.
 
 | Keys | JSON type | Message when the type is wrong |
 |---|---|---|
-| `system`, `url`, `encoding`, `path`, `format`, `watermark_pattern`, `schema`, `table_name`, `watermark_column`, `volume`, `billing_project` | string | `<section>.<key> must be a string` |
+| `system`, `url`, `encoding`, `path`, `format`, `watermark_pattern`, `schema`, `table_name`, `watermark_column`, `volume`, `billing_project`, `database`, `collection`, `schema_hints` | string | `<section>.<key> must be a string` |
 | `timeout` | number (`true` and `false` are not numbers) | `<section>.<key> must be a number` |
 | `headers` | object whose values are strings | `<section>.<key> must be an object of strings` |
 | `options` | object whose values are strings, numbers or booleans | `<section>.<key> must be an object of strings, numbers and booleans` |
@@ -254,7 +266,8 @@ Changing the key columns or the tracked columns is an edit of the JSON. One dime
 | a required key is missing | `<path>: <section>.<key> is required for system '<system>'` |
 | a value has the wrong JSON type, or is `null` | `<path>: <section>.<key> must be ...`, as in [JSON types](#json-types) |
 | a callback argument that the system does not take is given | `<path>: <section> system '<system>' takes no argument <name>` |
-| `connection` is missing for `postgres` | `<path>: <section> system 'postgres' needs the argument connection` |
+| `connection` is missing for `postgres` or `mongodb` | `<path>: <section> system '<system>' needs the argument connection` |
+| `connection` is not an instance of the system's connection class (`PostgresConnection` for `postgres`, `MongoDBConnection` for `mongodb`); a subclass is accepted | `<path>: <section> system '<system>' needs a <class> as the argument connection, not <type name>` |
 | the connector rejects a value, such as `table_name: "orders"` for `unity_catalog` | the connector's `ValueError`, the same object, with one note |
 | the system's extra is not installed | the connector's `ImportError`, the same object, with one note |
 | `SCD2` only: `target.system` is not `bigquery`, `postgres` or `unity_catalog` | `<path>: target.system '<name>' is not one of: bigquery, postgres, unity_catalog` |
@@ -271,11 +284,17 @@ Changing the key columns or the tracked columns is an edit of the JSON. One dime
 | `state[key]` is missing | `KeyError`, whose `args` are `(key,)`, when the process runs; the writer is not called |
 
 - `<names>` are the names valid for the section, sorted and separated by `, `: for a source
-  `bigquery, disk, gcs, json_api, postgres, s3, unity_catalog, volume`, for a target
+  `bigquery, disk, gcs, json_api, mongodb, postgres, s3, unity_catalog, volume`, for a target
   `bigquery, disk, gcs, json_lines, postgres, s3, unity_catalog, volume`.
+- `<class>` is `MongoDBConnection` for `mongodb` and `PostgresConnection` for `postgres`, and
+  `<type name>` is `type(connection).__name__`. So a `MongoDBConnection` given to a `postgres`
+  source raises `<path>: source system 'postgres' needs a PostgresConnection as the argument
+  connection, not MongoDBConnection`. `ReadSource`, `AppendOnly`, `FullLoad` and `SCD2` all make
+  this check. The messages hold nothing of the connection but its type name.
 - The checks run in this order: the argument and the file, the JSON, the section, `system`, the
   keys in the order of the file, the required keys in the order of the tables above, the types in
-  the order of the file, the callback arguments, and last the connector.
+  the order of the file, the callback arguments (a missing or unexpected argument, then the type of
+  `connection`), and last the connector.
 - `SCD2` runs these for its `target` section first. Then it checks the `scd2` section: that it is
   present and an object, its keys in the order of the file, its required keys (`key_columns`, then
   `effective_time_column`), the type of each value in the order of the file (for an array, its
@@ -297,7 +316,7 @@ extra is not installed raises, when the callback is built, the `ImportError` tha
 raises, which names the extra: `PostgresWriter needs psycopg: pip install 'ingestio[postgres]'`.
 It follows the connector's rule of needing the package only when it would import it: an `s3`, `gcs`
 or `volume` source given a `client` needs no extra, and a `bigquery` source without
-`watermark_column` needs none either. So changing a job's system is an edit of its JSON and, when
+`watermark_column` needs none either, and neither does a `mongodb` source. So changing a job's system is an edit of its JSON and, when
 the new system needs an extra, of its install.
 
 ## Example

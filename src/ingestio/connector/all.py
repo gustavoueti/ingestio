@@ -5,6 +5,7 @@ from ingestio.connector.core import Reader, Writer
 from ingestio.connector.gcs import GcsReader, GcsWriter
 from ingestio.connector.http import JsonApiReader
 from ingestio.connector.local import DiskReader, DiskWriter, JsonLinesWriter
+from ingestio.connector.mongodb import MongoDBConnection, MongoDBReader
 from ingestio.connector.postgres import PostgresConnection, PostgresReader, PostgresWriter
 from ingestio.connector.s3 import S3Reader, S3Writer
 from ingestio.connector.unity_catalog import UnityCatalogReader, UnityCatalogWriter
@@ -19,6 +20,8 @@ __all__ = [
     "GcsWriter",
     "JsonApiReader",
     "JsonLinesWriter",
+    "MongoDBConnection",
+    "MongoDBReader",
     "PostgresConnection",
     "PostgresReader",
     "PostgresWriter",

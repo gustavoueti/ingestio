@@ -14,6 +14,7 @@ from ingestio.callback.core import Callback
 if TYPE_CHECKING:
     from pyspark.sql import Column, DataFrame, SparkSession
 
+    from ingestio.connector.mongodb import MongoDBConnection
     from ingestio.connector.postgres import PostgresConnection
 
 __all__ = ["SCD2", "AppendOnly", "FullLoad", "ReadSource"]
@@ -26,8 +27,9 @@ class ReadSource(Callback):
         config: Path of the job's JSON configuration file. Its `source` section names the
             system and holds the reader's parameters.
         into: Key of `Process.state` that receives the payload.
-        connection: Where a PostgreSQL source lives, with its credentials. Required by the
-            `postgres` system.
+        connection: Where a PostgreSQL or MongoDB source lives, with its credentials: a
+            `PostgresConnection` for the `postgres` system, a `MongoDBConnection` for the
+            `mongodb` system. Required by both.
         client: SDK client of the source, for the systems that take one.
         watermark_value: Last watermark already ingested, for the systems that take one.
         spark: Session to read with, for the Spark systems. The active session when omitted.
@@ -38,7 +40,7 @@ class ReadSource(Callback):
         config: str | os.PathLike[str],
         *,
         into: str = "records",
-        connection: PostgresConnection | None = None,
+        connection: PostgresConnection | MongoDBConnection | None = None,
         client: object | None = None,
         watermark_value: int | Decimal | str | date | None = None,
         spark: SparkSession | None = None,

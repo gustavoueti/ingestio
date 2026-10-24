@@ -62,6 +62,10 @@ What in version 0.0.1 leans towards batch:
   `BigQueryWriter.write()` needs the whole DataFrame before its statement commits. A streaming
   source for BigQuery, such as its change history or a Pub/Sub subscription, or a Structured
   Streaming write, would be a different connector.
+- The MongoDB reader ([spec](../../specs/mongodb_reader.md)) leans towards batch:
+  `MongoDBReader.read()` returns one slice, with a watermark fixed when the reader is built. A
+  streaming or CDC source for MongoDB, such as change streams through the connector's streaming
+  read, tracks a resume token and would be a different connector.
 - SCD2 ([spec](../../specs/scd2_callback.md)) leans towards batch: each run reads the whole batch
   and the whole target, checks the batch, and rewrites the dimension. A streaming SCD2, applying
   changes per micro-batch, would be another write strategy, a callback of its own (ADR 0016).

@@ -1471,6 +1471,513 @@ Writing:
   Federation for read-only queries of BigQuery; these connectors are for jobs that write, that
   filter by watermark, or that run on open-source Spark.
 
+### MongoDB: `MongoDBConnection`, `MongoDBReader`
+
+```python
+from ingestio.connector.all import MongoDBConnection, MongoDBReader
+```
+
+These two classes are exported by `ingestio.connector.all` only, not by `ingestio`. They read a
+MongoDB collection through the MongoDB Spark Connector: the documents move from MongoDB to the
+Spark executors. `MongoDBReader` returns a `pyspark.sql.DataFrame`, so it satisfies
+`Reader[DataFrame]`, structurally. There is no MongoDB writer. In a configuration,
+`"system": "mongodb"` in the `source` section takes the keys `database` and `collection` (both
+required), `watermark_column`, `schema_hints` and `options`; `mongodb` is not a target. `ReadSource`
+needs the argument `connection`, a `MongoDBConnection` that the job builds, and also takes
+`watermark_value` and `spark`; it takes no `client`. The connection string is never a key.
+
+It follows the [PostgreSQL
+connectors](#postgresql-postgresconnection-postgresreader-postgreswriter) and the [Unity Catalog
+connectors](#unity-catalog-unitycatalogreader-unitycatalogwriter): a collection is read
+incrementally by a watermark with a frozen upper bound, and an ingestion's parameters are
+[constructor arguments](#how-a-connector-receives-an-ingestions-parameters). The reader adds no
+dependency and no extra: pyspark and the MongoDB Spark Connector, a JAR, are prerequisites that the
+runtime provides, and pyspark is imported only when it is needed. It uses no native MongoDB client.
+
+#### `MongoDBConnection`
+
+```text
+MongoDBConnection(uri: str)
+```
+
+Where and how to reach one MongoDB deployment. It opens nothing by itself, and it is not a third
+concept: it is a value, like `PostgresConnection`, that holds what reaching the system needs. It is
+immutable, and `uri` is readable as an attribute. `uri` is the connection string, `mongodb://...`
+or `mongodb+srv://...`, credentials included. On Databricks the job reads it from a secret store
+and the library never does:
+
+<!-- example: skip -->
+```python
+from ingestio.connector.all import MongoDBConnection
+
+connection = MongoDBConnection(dbutils.secrets.get("mongo", "uri"))
+```
+
+The connection reads three parts of `uri`, as text, and decodes nothing: the *scheme*, which must
+be `mongodb://` or `mongodb+srv://` exactly, in lowercase; the *authority*, the text after the
+scheme up to the first `/` or `?`, or to the end; and the *hosts*, the text of the authority after
+its last `@`, or the whole authority when it holds no `@`. It reads nothing after the authority,
+the path and the options included.
+
+| `uri` | Hosts |
+|---|---|
+| `mongodb+srv://user:secret@cluster0.example.net/?retryWrites=true&w=majority` | `cluster0.example.net` |
+| `mongodb://user:secret@h1:27017,h2:27017,h3:27017/shop?replicaSet=rs0` | `h1:27017,h2:27017,h3:27017` |
+| `mongodb://localhost:27017?directConnection=true` | `localhost:27017` |
+
+Invalid strings raise when the connection is built, the first check that fails in this order:
+
+| Case | Error |
+|---|---|
+| `uri` is not a `str` | `TypeError("uri must be a str, not <type name>")` |
+| `uri` does not start with `mongodb://` or `mongodb+srv://` | `ValueError("uri must start with 'mongodb://' or 'mongodb+srv://'")` |
+| the text after the authority holds an `@` | `ValueError("uri has an unencoded '@' after its hosts")` |
+| the hosts are empty | `ValueError("uri names no host")` |
+
+`<type name>` is `type(uri).__name__`. The third check protects the `repr`: MongoDB's connection
+string format requires `@`, `/`, `?` and `:` in the user and the password to be percent-encoded,
+and a password with a raw `/` or `?` would end the authority inside the credentials. Such a string
+is rejected rather than split into hosts that hold part of a password. An `@` in an option value
+is rejected for the same reason: write it `%40`. Nothing else is checked: the path, the options,
+the form of each host, the credentials and the SRV record are the connector's and the driver's,
+when the reader reads. Building opens no connection and resolves no name.
+
+`repr` and `str` show the hosts, written as a Python string literal, and never the user or the
+password:
+
+```text
+MongoDBConnection(hosts='cluster0.example.net')
+MongoDBReader(database='shop', collection='orders', hosts='cluster0.example.net')
+```
+
+No `repr`, `str` or error message of the connection, of the reader or of the callbacks' checks
+holds any part of `uri` other than the hosts.
+
+#### The path of the connection string
+
+The path is accepted whatever it names, and is never rewritten.
+
+- **It does not decide what is read.** The reader always sets the connector's `database` and
+  `collection` options, and the connector puts explicit options over the database and the
+  collection it parses from the connection string's path. This is established by the connector's
+  source code and its tests (`AbstractMongoConfig.createUsageOptions` and
+  `MongoConfigTest.testDatabaseAndCollectionParsing`, in mongodb/mongo-spark at `r10.4.0` and
+  `r11.1.0`). So `mongodb://user:secret@db.internal/admin` with `database="shop"` reads `shop`,
+  not `admin`.
+- **It stays the driver's default authentication database** when the connection string has no
+  `authSource` option, as MongoDB's connection string format defines it. A connection string kept
+  in a secret store often names `admin` there, and keeps working.
+- **The connector's documentation says the opposite**: it gives `connection.uri` precedence over a
+  setting given on its own. The connector's code and tests do the contrary, and this reader relies
+  on the code.
+
+#### `MongoDBReader`
+
+```text
+MongoDBReader(
+    database: str, collection: str, connection: MongoDBConnection,
+    *, watermark_column: str | None = None,
+    watermark_value: int | Decimal | str | date | None = None,
+    schema_hints: str | None = None,
+    options: Mapping[str, str | int | float | bool] | None = None,
+    spark: SparkSession | None = None,
+)
+
+MongoDBReader.read() -> DataFrame
+```
+
+- `database`: the database of the collection. The configuration key of the same name. Passed to
+  the connector as given.
+- `collection`: the source collection, one name. The configuration key of the same name.
+- `connection`: where the collection lives, with its credentials.
+- `watermark_column`: one top-level field that orders changes, such as `updatedAt`. The
+  configuration key of the same name.
+- `watermark_value`: the last watermark already ingested. Only documents above it are read.
+  Requires `watermark_column`. `datetime.datetime`, a subclass of `date`, is accepted too.
+- `schema_hints`: the types of known fields, a DDL string. The configuration key of the same name.
+- `options`: read options of the MongoDB Spark Connector passed through, such as `sampleSize` or
+  `partitioner`.
+- `spark`: the session to read with. The active session when omitted.
+
+Building the reader validates its arguments and does nothing else: it imports no third-party
+package, touches no Spark session, opens no connection, and does not check that the database or the
+collection exists. The reader does not check the type of `connection`; a value without the
+attributes of a `MongoDBConnection` fails with Python's error. The callbacks do check it, see
+[Configuration](configuration.md#errors).
+
+The reader raises `ValueError` when it is built, the first case that applies in this order:
+
+| Case | Message |
+|---|---|
+| `database == ""` | `database must not be empty` |
+| `collection == ""` | `collection must not be empty` |
+| `watermark_column == ""` | `watermark_column must not be empty` |
+| `watermark_value` without `watermark_column` | `watermark_value needs watermark_column` |
+| `bool`, `float` or any other type | `unsupported watermark_value type: <type name>` |
+| a `Decimal` that is NaN or infinite | `watermark_value must be finite` |
+| a naive `datetime` | `watermark_value must be timezone-aware` |
+| `schema_hints` empty or only blanks | `schema_hints must not be empty` |
+| `schema_hints` starting with `{` after its blanks | `schema_hints must be a DDL string, not JSON` |
+| a reserved key in `options` | `option '<key>' is set by the connector` |
+
+`<type name>` is `type(value).__name__` and `<key>` is the key as given. A datetime is naive when
+its `tzinfo` is `None` or its `utcoffset()` is `None`. The blanks of `schema_hints` are the
+characters from U+0000 to U+0020, those that Java's `String.trim()` removes, which is how the
+connector trims it. `repr` shows the database, the collection as given, unescaped, and the hosts,
+and nothing else.
+
+**Reading.** Each call to `read()` looks up the session, never when the reader is built: `spark`
+when given, otherwise `SparkSession.active()`. The reader never creates a session; when none is
+active, PySpark's error propagates. It then builds one DataFrame over the collection, the
+*source*, with `spark.read.format("mongodb").options(**<options>).load()`, with no argument to
+`load()` and no call to `schema()`. The options are `connection.uri`, the connection string as
+given and never rewritten; `database`; `collection`, escaped as [below](#collection-names);
+`schemaHints`, only when `schema_hints` is given; and the job's `options`.
+
+- **Empty schema.** The reader reads `source.columns` once. When it is empty, the reader returns
+  `source.where("false")`, a DataFrame with no columns and no rows, with or without
+  `watermark_column`, and runs no bound query. See [An empty or missing
+  collection](#an-empty-or-missing-collection).
+- **Full read** (no `watermark_column`): `read()` returns the source unchanged. It runs no Spark
+  action. Every action on the DataFrame reads the collection again, so a full read is not frozen.
+- **Watermark read** (`watermark_column` given): only the documents with a watermark above
+  `watermark_value` (all of them when it is `None`) are read. `read()` first runs one query on the
+  source, filtered by the lower predicate when a value is given:
+
+  ```text
+  CAST(max(<col>) AS STRING) AS upper_bound
+  typeof(max(<col>)) AS upper_bound_type
+  ```
+
+  `<col>` is the field as a Spark SQL identifier, wrapped in backticks with the backticks inside
+  doubled. The result is the highest watermark of the slice as Spark renders it, and the type Spark
+  names for it. The DataFrame returned is the source filtered with
+  `<col> > <value> AND <col> <= CAST(<bound> AS <type>)`, or `<col> <= CAST(<bound> AS <type>)`
+  without a value, or `false` when no document qualifies. The consequences:
+  - the filter is part of the DataFrame over the collection, and the connector pushes comparisons
+    of the field with a constant to MongoDB as a `$match` stage. That is how the reader filters
+    inside the source ([ADR 0013](../decisions/0013-connector-configuration-convention.md)). It
+    holds when the Spark type of the watermark field matches the BSON type of its values, see the
+    [limitations](#limitations-of-the-mongodb-reader);
+  - every action on the DataFrame reads the same range of the watermark. Documents written after
+    `read()` with a higher watermark are left for the next run, so a watermark that the job computes
+    from the DataFrame never goes past what the DataFrame holds;
+  - the bound never passes through Python types: Spark's own text is cast back to the field's own
+    type, which is exact for integer, decimal, string and timestamp fields;
+  - the comparison is strictly greater, and documents whose watermark is `null` or missing are never
+    read, the first run included;
+  - an empty slice is a DataFrame with the source's columns and no rows;
+  - the reader adds no column, cast, projection or Spark setting. The bound query runs once per
+    `read()` and brings the watermark field of every document above the lower bound into Spark:
+    MongoDB does not compute the maximum.
+- The reader decides no strategy. Whether a run is incremental, from which value, and how the next
+  watermark is computed and kept, belong to the job. The bound that `read()` captured is not
+  exposed, and the reader keeps no state between calls: a reader built once serves every run that
+  calls it.
+- Nothing is caught and no log line is written.
+
+**What reading the schema costs.** On classic Spark, `load()` infers the schema, which reads a
+sample of the collection inside `read()`, and `source.columns` then reads the schema already known
+and runs no Spark job. On Spark Connect, `load()` sends nothing, and `source.columns` sends one
+request to analyse the plan, which makes the server infer the schema by sampling the collection;
+each action later analyses the plan again.
+
+**Watermark values.** `watermark_value` is "given" when it is not `None`: `0` and `""` are values.
+It becomes a literal of Spark SQL, as for [`UnityCatalogReader`](#unitycatalogreader):
+
+| Type | Literal |
+|---|---|
+| `int`, but not `bool` | the number, unquoted: `41`, `-7` |
+| finite `decimal.Decimal` | `format(value, "f")` followed by `BD`: `12.50BD` |
+| `str` | a string literal |
+| timezone-aware `datetime.datetime` | converted to UTC, then `isoformat(sep=" ")`, as a string literal: `'2026-10-01 08:30:00+00:00'` |
+| `datetime.date` | `value.isoformat()` as a string literal: `'2026-10-01'` |
+
+A string literal wraps the text in single quotes and precedes each backslash and each single quote
+inside with a backslash: `O'Brien` becomes `'O\'Brien'`. This assumes
+`spark.sql.parser.escapedStringLiterals` is `false`, Spark's default.
+
+- The value has the field's Spark type, or one that Spark coerces to it: an aware `datetime` for a
+  field of BSON type Date, read as `TIMESTAMP`; an `int` for Int32 and Int64; a `Decimal` for
+  Decimal128; a `str` for String. Spark casts a string literal compared with a `TIMESTAMP` field to
+  a timestamp, so an aware datetime, converted to UTC, is the same instant whatever offset it
+  carried. A `date` compared with a `TIMESTAMP` field is midnight of that date in the session time
+  zone.
+- The reader writes Spark literals, not MongoDB queries: the connector turns each pushed comparison
+  into BSON values.
+
+#### Schema hints
+
+MongoDB documents have no schema. The connector infers one from a sample of the collection
+(`sampleSize`, 1000 documents by default). A field that no sampled document holds is missing from
+the DataFrame, and a field whose values have different types across documents gets a type that the
+job cannot count on and that can change from one run to the next. A watermark filter compares a
+field with a value of a given type, so a wrong type gives a wrong comparison.
+
+`schema_hints` fixes the types the job knows. It is a DDL string of `<name> <type>` pairs separated
+by commas, passed to the connector's `schemaHints` read option as given, unparsed:
+
+```text
+updatedAt TIMESTAMP, total DECIMAL(18,2)
+```
+
+What the connector does with it, from its source code (`InferSchema` and `ReadConfig`, identical
+at `r10.4.0` and `r11.1.0`):
+
+- It merges each hint into the struct of every sampled document: a hinted field that a document
+  lacks is added, and one that the document holds is merged with the hint, the hint preferred. So a
+  hinted field is in the DataFrame even when no sampled document holds it.
+- A hint name may be a dotted path into nested documents, such as `audit.updatedAt TIMESTAMP`, which
+  the connector turns into nested structs. The reader passes it as given and claims nothing more.
+- The top-level fields of the merged schema come out sorted by name: the DataFrame's columns are not
+  in the order of the documents' fields.
+- The connector trims the text, treats a blank text as no hints, reads a text that starts with `{`
+  as JSON and any other as DDL. The reader rejects a blank text and the JSON form when it is built,
+  so that neither is silently different from what the job wrote. A text that the connector cannot
+  parse fails the read with the connector's `ConfigException`, "Invalid schemaHints configuration".
+- **An empty sample.** When the sample holds no document, because the collection is empty or
+  missing, the hints are never applied and the inferred schema has no field.
+
+Hint the watermark field with the type its documents hold. There is no `schema` key, and no JSON
+form of the hints. Everything else is the connector's: the reader converts nothing, so how it
+infers a field whose types differ across documents, nested documents, arrays and `_id` (an ObjectId
+`_id` is inferred as `struct<oid: string>`, as the connector's documentation shows) gives the
+DataFrame's schema. A job that needs another shape formats the DataFrame in a callback of its own.
+`sampleSize` and the `sql.inferSchema.*` options pass through `options`.
+
+#### Collection names
+
+The connector reads its `collection` option as a list of names: `*` alone means every collection,
+`,` separates names, and `\` escapes `,`, `\` and `*`. So that a collection name always reaches it
+as that one collection, the reader escapes `collection` before it passes the option: in one pass
+over the name, each `\`, `,` and `*` is written with a `\` before it, and every other character as
+it is. The names below are texts, not Python literals: `a\b` is three characters.
+
+| `collection` | The `collection` option |
+|---|---|
+| `orders` | `orders` |
+| `orders.2026` | `orders.2026` |
+| `a,b` | `a\,b` |
+| `*` | `\*` |
+| `logs*` | `logs\*` |
+| `a\b` | `a\\b` |
+| `\,*` | `\\\,\*` |
+
+Only the option is escaped. The `repr` shows the name as given, and no error message of the reader
+shows the collection. The reader reads one collection, never several.
+
+#### An empty or missing collection
+
+An empty collection, and a collection that does not exist, give a sample with no document, so the
+inferred schema has no field, whatever `schema_hints` says. `read()` returns a DataFrame with no
+columns and no rows, and does not fail; a typo in `collection` reads the same way, with no error. A
+full read gets the same `where("false")` as a watermark read, so the DataFrame stays empty at every
+action: without it, documents inserted after `read()` could show as rows with no columns.
+
+Writers handle a DataFrame with no columns differently from an empty one with columns. The PostgreSQL,
+Unity Catalog and BigQuery writers reject it with `ValueError("the DataFrame has no columns")`. The
+file writers (`DiskWriter`, `S3Writer`, `GcsWriter`, `VolumeWriter`) have no check of their own and
+hand the DataFrame to Spark, so what happens is Spark's. So a job whose first run reads an empty
+collection and then appends to one of the table systems fails at the write. A job that wants to skip
+the write checks the DataFrame in a callback of its own and raises `CancelStepException`.
+
+A watermark field missing from a schema that has fields, because no sampled document holds it and no
+hint names it, or because of a typo, fails with Spark's error: on classic Spark inside `read()`, on
+Spark Connect at the bound query.
+
+#### Options
+
+`options` are read options of the MongoDB Spark Connector, passed through as given, such as
+`sampleSize`, `partitioner`, `partitioner.options.*`, `aggregation.allowDiskUse`, `mode`,
+`columnNameOfCorruptRecord`, `outputExtendedJson`, `sql.inferSchema.mapTypes.*` and `comment`. The
+connector prefixes each option, the reader's included, with `spark.mongodb.read.`. The reader sets
+no option besides its own keys. Spark turns the values into strings, and booleans into `true` and
+`false`.
+
+These keys are reserved. Giving one, in any case, raises
+`ValueError("option '<key>' is set by the connector")` when the reader is built, with the key as
+given. A key is reserved when its lowercase form is one of the names below, alone or preceded by
+`spark.mongodb.read.` or by `spark.mongodb.`. The forms with a prefix are reserved because the
+connector keeps a key that already starts with `spark.mongodb.read.` as it is, and reads the keys
+under `spark.mongodb.` as defaults of the read scope; either would compete with the reader's own.
+
+| Reserved key | Why |
+|---|---|
+| `connection.uri` | It comes from `connection`. |
+| `database`, `collection` | The reader names the collection. |
+| `schemaHints` | It comes from `schema_hints`. |
+| `aggregation.pipeline` | A pipeline changes what is read and cannot safely be bounded by a watermark ([ADR 0013](../decisions/0013-connector-configuration-convention.md)), as `query` is reserved on the PostgreSQL and BigQuery readers. |
+
+**Errors of a read.** Nothing is caught. Errors of PySpark, Spark, the connector and MongoDB
+propagate out of `read()` unchanged, the same object, and nothing in them is redacted. When one
+surfaces depends on the session: classic Spark infers the schema when `read()` loads the source,
+so, as far as is known, a server that cannot be reached, a failed authentication or a hint that
+cannot be parsed fails `read()`; on Spark Connect they fail when the plan is first analysed, at
+`source.columns` inside `read()`. The reader writes no log lines.
+
+#### Credentials in Spark's plans
+
+The connection string, credentials included, reaches Spark as the value of the `connection.uri`
+option. Spark's default redaction of option values in its plans covers keys that match `url`, as far
+as is known, which `connection.uri` does not. Whether `explain()`, the Spark UI or the event logs
+show it, and whether the connector redacts it, is not established. A job that needs it hidden adds
+`uri` to the session's `spark.sql.redaction.options.regex`:
+
+<!-- example: skip -->
+```python
+spark.conf.set("spark.sql.redaction.options.regex", "(?i)url|uri")
+```
+
+The reader sets no session configuration. Whether errors of the connector and the driver ever hold
+a part of the connection string is not established either.
+
+#### Example
+
+This runs as written, because building the objects touches neither Spark nor MongoDB. Reading needs
+a Spark session with the MongoDB Spark Connector and a MongoDB deployment.
+
+```python
+from datetime import UTC, datetime
+
+from ingestio.connector.all import MongoDBConnection, MongoDBReader
+
+connection = MongoDBConnection(
+    "mongodb+srv://user:secret@cluster0.example.net/?retryWrites=true&w=majority"
+)
+print(connection)
+
+reader = MongoDBReader(
+    "shop",
+    "orders",
+    connection,
+    watermark_column="updatedAt",
+    watermark_value=datetime(2026, 10, 1, tzinfo=UTC),
+    schema_hints="updatedAt TIMESTAMP, total DECIMAL(18,2)",
+    options={"sampleSize": 5000},
+)
+print(reader)
+
+for build in (
+    lambda: MongoDBConnection("postgresql://db.internal/shop"),
+    lambda: MongoDBConnection("mongodb://user:p/ss@db.internal/"),
+    lambda: MongoDBConnection("mongodb://user:secret@/shop"),
+    lambda: MongoDBReader("shop", "orders", connection, watermark_value=41),
+    lambda: MongoDBReader("shop", "orders", connection, schema_hints='{"type": "struct"}'),
+    lambda: MongoDBReader("shop", "orders", connection, options={"database": "other"}),
+):
+    try:
+        build()
+    except ValueError as error:
+        print(error)
+```
+
+A job on Databricks: the collection is in the configuration, the connection string stays in the
+job, and `AppendOnly` appends. `/Workspace/jobs/orders.json`:
+
+```json
+{
+  "source": {
+    "system": "mongodb",
+    "database": "shop",
+    "collection": "orders",
+    "watermark_column": "updatedAt",
+    "schema_hints": "updatedAt TIMESTAMP, total DECIMAL(18,2)",
+    "options": {"sampleSize": 5000}
+  },
+  "target": {"system": "unity_catalog", "table_name": "main.bronze.orders"}
+}
+```
+
+<!-- example: skip -->
+```python
+from ingestio import AppendOnly, Process, ReadSource, Step
+from ingestio.connector.all import MongoDBConnection
+
+CONFIG = "/Workspace/jobs/orders.json"
+
+mongo = MongoDBConnection(dbutils.secrets.get("mongo", "uri"))  # the job reads its secret
+
+Process([
+    Step("extract", [
+        ReadSource(CONFIG, into="orders", connection=mongo, watermark_value=last_watermark)
+    ]),
+    Step("load", [AppendOnly(CONFIG, key="orders")]),
+]).run()
+```
+
+#### Environments of the MongoDB reader
+
+- pyspark 3.5 or later is a prerequisite that the runtime provides.
+- The MongoDB Spark Connector, a prerequisite JAR,
+  `org.mongodb.spark:mongo-spark-connector_<Scala version>:<version>`, on the session's classpath:
+  - for Spark 3.5, Databricks Runtime 15.4 LTS included, a 10.x release from 10.4.0, the first
+    that reads `schemaHints`;
+  - for Spark 4, the 11.x line. `r11.1.0` compiles against Spark 4.0.1; support for Spark 4.2 is
+    not established.
+  - The reader checks no version at run time.
+- Databricks classic compute on Databricks Runtime 15.4 LTS or later, in dedicated access mode,
+  with the connector installed as a cluster library. Standard access mode, which restricts JAR
+  libraries, and serverless compute: no claim. Only the DataFrame API is used.
+- Databricks Connect against such a cluster: not tested, no claim.
+- Open-source Spark 3.5 or later, on a Java version that release supports (17 or 21 for Spark 4),
+  with the connector on the classpath, for example through `spark.jars.packages`.
+- MongoDB: the server versions that the connector supports. The reader adds no requirement of its
+  own.
+- Network: the driver reaches MongoDB to sample the collection and plan the partitions, and every
+  executor reaches it to read its partitions.
+- Privileges: the connector runs aggregations, `$sample` for the inference, and the statistics of
+  its default partitioner. The built-in `read` role on the database covers them, as far as is
+  known.
+
+#### Limitations of the MongoDB reader
+
+The repository has no integration tests of this reader: every test runs with test doubles, without
+a JVM, a network or a MongoDB server. What the connector's source code establishes is cited above.
+These claims rest on the connector's documentation and on knowledge of it, and are not verified:
+that the connector pushes `<col> > <literal>` and `<col> <= <literal>` on `timestamp`, `bigint`,
+`decimal` and `string` fields to MongoDB as one `$match`, and that the bound query reads only the
+watermark field; whether Spark applies the pushed comparisons again to the rows it receives; how
+the connector converts a watermark value with microseconds into a BSON Date; when inference errors
+surface on each kind of session; what Spark's redaction covers; and the privileges and
+environments listed above.
+
+- **Late writes.** A document written after a read with a watermark at or below the bound that read
+  captured is never read by a later run. Documents that share the exact value of the previous
+  watermark but are written later are missed the same way. It is the classic limit of timestamp
+  watermarks.
+- **The slice is frozen by watermark, not by snapshot.** Each action reads MongoDB again, each
+  partition with its own cursor. A document of the slice that is deleted, or updated without moving
+  its watermark, after `read()` shows its new state in later actions. A full read is not frozen at
+  all.
+- **Type mismatch.** MongoDB compares a value only with values of the same BSON type class: a
+  `$match` on a String value does not match a Date. When the Spark type of the watermark field does
+  not match the BSON type of its values, for instance a field inferred as a string because some
+  documents hold strings, the pushed filter can leave out documents that Spark would have selected.
+  Hint the watermark field with the type its documents hold, and keep one BSON type in that field.
+- **Inference by sampling.** A field that no sampled document holds is absent from the DataFrame
+  unless it is hinted, and the type of a field that is not hinted can change from one run to the
+  next.
+- **An empty or missing collection** reads as a DataFrame with no columns and no rows, a typo in
+  `collection` included, and a job that appends it to a table system fails at the write.
+- **Milliseconds.** A BSON Date holds milliseconds. A watermark of millisecond precision avoids the
+  question of how the connector converts a value with microseconds.
+- **`TIMESTAMP` bounds and the session time zone,** as for `UnityCatalogReader`: Spark renders the
+  bound in the session time zone and casts it back in the same zone, so the session time zone must
+  not change between `read()` and the actions on the DataFrame.
+- **The bound query** brings the watermark field of every document above the lower bound into
+  Spark, once per `read()`.
+- **Reading the schema** costs one more analysis of the plan on Spark Connect, which samples the
+  collection again, at every `read()`.
+- **`mode`.** With `PERMISSIVE` or `DROPMALFORMED` in `options`, documents that do not fit the
+  schema are kept aside or dropped instead of failing the read. Those at or below the bound are
+  never read again.
+- **`_id`.** The time inside an ObjectId is not a watermark, and a field that holds ObjectIds cannot
+  be compared with any accepted value. The watermark field is one top-level field: a field of a
+  nested document, or a name that holds a `.`, is not supported.
+- Writing to MongoDB, change streams and streaming reads, custom aggregation pipelines, reading
+  several collections at once, converting, flattening or renaming fields, MongoDB views, time series
+  collections, the specifics of sharded clusters and Atlas features are not covered.
+
 ### Disk: `DiskReader`, `DiskWriter`
 
 ```python
@@ -3076,6 +3583,9 @@ far:
 | `databricks` | `databricks-sdk>=0.20` | `VolumeReader`, only when the job passes no `client` |
 | `bigquery` | `google-cloud-bigquery>=3.20` | `BigQueryWriter` always; `BigQueryReader` only for watermark reads |
 
+The MongoDB connectors have no extra: `MongoDBReader` imports only pyspark, lazily, and the MongoDB
+Spark Connector is a JAR that the runtime provides.
+
 The pattern:
 
 1. An extra is declared in `[project.optional-dependencies]` and named after the system it
@@ -3093,6 +3603,7 @@ The pattern:
    when it is given a `watermark_column`: a reader for full reads imports nothing.
 4. An engine that the runtime provides, such as pyspark on Databricks, is never a dependency of
    an extra. It is a documented prerequisite: here, pyspark 3.5 or later. Delta Lake is one too,
-   so the Unity Catalog connectors add no extra.
+   so the Unity Catalog connectors add no extra. So is the MongoDB Spark Connector, a JAR on the
+   session's classpath, so `MongoDBReader` needs no extra and no native MongoDB client.
 5. The `dev` dependency group holds the packages of every extra, so that `uv sync` gives an
    environment where the whole suite and mypy run.
