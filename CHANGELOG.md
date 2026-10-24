@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v0.4.0 (2026-10-24)
+
+### Documentation
+
+- Record that only technical reasons justify a decision
+  ([#14](https://github.com/gustavoueti/ingestio/pull/14),
+  [`8111bab`](https://github.com/gustavoueti/ingestio/commit/8111babe21ddb17cd702f8719b4f14601258eb4c))
+
+### Features
+
+- **callback**: Add AppendOnly and FullLoad in place of WriteTarget
+  ([#13](https://github.com/gustavoueti/ingestio/pull/13),
+  [`aecaaa6`](https://github.com/gustavoueti/ingestio/commit/aecaaa67d04bdbd7eb3ffb6ff522b640ae8e2e00))
+
+
 ## v0.3.0 (2026-10-23)
 
 ### Features
