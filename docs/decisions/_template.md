@@ -15,7 +15,9 @@ What was decided.
 ## Rationale
 
 Why. Quote the source when the reason is written down somewhere in the repository. When it is
-not, leave the marker below for the maintainer to fill in. Never write a reason nobody gave.
+not, leave the marker below for the maintainer to fill in. Never write a reason nobody gave. A
+reason is technical: a personal opinion or a remark made in conversation is not one
+([AGENTS.md](../../AGENTS.md#reasons-for-a-decision)).
 
 > TODO(maintainer): why this decision was taken.
 

@@ -47,6 +47,21 @@ cases, naming, scope, a trade-off between principles, the intent behind a reques
   question, and the main session takes it to the maintainer. In planning, the questions go
   under **Open questions** in the spec.
 
+## Reasons for a decision
+
+Only technical reasons justify a concept, a decision or the rationale of an ADR: what the
+philosophy, an ADR, the code or a measurement establishes, or a technical specification the
+maintainer gives for the decision. A personal opinion never justifies anything in this
+project, and neither does a remark made in passing, the maintainer's included: it is context
+for the conversation, not a reason to record.
+
+- Tell apart a conversation that defines a direction, with technical specifications, from what
+  is said around it.
+- Record in a spec or an ADR only the technical reasons given for a decision. When none is
+  given, write `TODO(maintainer)`, never a reason built from a remark or an opinion.
+- When relaying the maintainer's answers to an agent, pass the decision and its technical
+  reasons, not the remarks around them.
+
 ## Constraints
 
 - **Never write to git or GitHub.** Reading is fine: `git log`, `show`, `diff`, `status`,
