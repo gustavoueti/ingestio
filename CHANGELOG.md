@@ -2,6 +2,20 @@
 
 <!-- version list -->
 
+## v0.6.0 (2026-10-24)
+
+### Documentation
+
+- List the shipped connectors in the README
+  ([`bcffef3`](https://github.com/gustavoueti/ingestio/commit/bcffef32e94cb964e19219732b2bcf1971544139))
+
+### Features
+
+- **connector**: Add MongoDBReader with schema hints
+  ([#16](https://github.com/gustavoueti/ingestio/pull/16),
+  [`23f59f3`](https://github.com/gustavoueti/ingestio/commit/23f59f39d327fd73fe9ef12971309943cdc91015))
+
+
 ## v0.5.0 (2026-10-24)
 
 ### Features
