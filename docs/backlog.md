@@ -78,8 +78,9 @@ These questions apply to both:
 - Who applies the changes? The philosophy lists CDC replication as a callback, and ADR 0016
   makes each write strategy one callback. Does the connector only return the change events, with
   a separate callback and spec applying them to the target? No shipped writer updates or deletes
-  rows today, so that callback needs a capability that the shipped writers lack, as SCD2 does
-  (idea 12).
+  rows today, so that callback either needs a capability that the shipped writers lack, or
+  rewrites the whole target with `write(data, replace=True)`, as `SCD2` does
+  ([spec](../specs/scd2_callback.md), decision 1).
 - Which client package: PyMySQL or mysql-connector-python? MySQL Connector/J is a prerequisite
   for Spark, as the PostgreSQL JDBC driver is.
 
@@ -102,84 +103,3 @@ These questions apply to both:
   limits. For `FullLoad`, the alternative is a staging collection, for example with `$out`,
   which replaces the target collection only once the aggregation finishes.
 - Does MongoDB need CDC too, through change streams, as MySQL does?
-
-## 12. SCD2 write callback
-
-**Idea.** Implement SCD2, one of the two default callbacks the
-[philosophy](philosophy.md#callback) names: when a tracked attribute of an entity changes, its
-current version is closed and a new version is added, so that every past state stays queryable.
-Requested on 2026-10-23 and parked here while the write callbacks `AppendOnly` and `FullLoad`
-were built. They have landed
-([ADR 0016](decisions/0016-make-each-write-strategy-one-callback.md)).
-
-**Spec:** [specs/scd2_callback.md](../specs/scd2_callback.md), a `draft` written on 2026-10-22
-while the workflow was set up and never reviewed by the planner. It predates
-[ADR 0015](decisions/0015-choose-connectors-from-the-job-configuration.md), ADR 0016 and the
-Spark connectors, so it goes back to the planner first, with the changes listed under "Effects
-on the draft specs" in [specs/config_connectors.md](../specs/config_connectors.md). The entry is
-removed when the work lands.
-
-**What changed since the draft.**
-
-- Each write strategy is one callback (ADR 0016). `AppendOnly` and `FullLoad` take the path of
-  the job's configuration and build their writer from the `target` section, through the closed
-  table, with the callback arguments `connection` and `client`. SCD2 is one more, built the same
-  way. The configuration has no mode.
-- The callback accepts no connector, so the proposal `SCD2(source, target, *, keys, ...)`
-  changes, and so does the spec's question 1: a capability that user connectors implement is
-  gone.
-- Every shipped writer offers `write(data, *, replace=False)`, and every one except `json_lines`
-  takes a Spark DataFrame. None updates or merges rows.
-- SCD2 reads the current versions from the target, so it also needs a reader of the target's
-  system, built from a section meant for a writer.
-
-**Open questions.** They update the spec's own questions, which the numbers refer to.
-
-- How does it apply the changes (question 1)?
-  - An atomic rewrite: read the whole target with the reader of its system, compute the new
-    table in Spark (the closed versions plus the new ones) and write it with `replace=True`, as
-    `FullLoad` does. No connector needs a new capability, but every run rewrites the whole
-    dimension.
-  - A Delta `MERGE INTO`, in one commit. It scales better, but only Delta targets support it,
-    it needs a new merge capability on the Delta connectors, and it leaves PostgreSQL and
-    BigQuery out.
-  - Both, with the merge where the target supports it.
-- Which target systems does it support? A rewrite through `replace=True` is atomic for
-  `unity_catalog`, `bigquery`, `postgres`, and the file systems in `delta` format. For parquet,
-  CSV or JSON files in `disk`, `s3`, `gcs` or `volume` it is not, so a failure halfway through
-  can lose the dimension's history. Spark also refuses to overwrite a path it is reading from.
-  `json_lines` has no reader. Is it the atomic systems only?
-- How does it build the target's reader? Does the reader take the keys of the `target` section
-  (`table_name`, `path`, `format`) and the callback arguments `connection` and `client`?
-- What happens on the first run, when the target does not exist? It could treat the target as
-  empty and let the writer create it where
-  [ADR 0014](decisions/0014-create-a-missing-target-only-when-derived-from-the-data.md) allows
-  (`unity_catalog`, Delta files), and fail where the writer creates nothing (`postgres`,
-  `bigquery`).
-- Where do its parameters go: `keys`, the tracked columns, the names of the version columns?
-  Constructor arguments, or members of the file outside `source` and `target` (decision 11 of
-  the configuration spec)?
-- What does an entity that is current in the target but absent from the batch mean
-  (question 5)? Incremental: it stays as it is, which matches the readers that filter on a
-  watermark, but deletes in the source are missed. Snapshot: its current version is closed,
-  which needs the whole source on every run. Or an option, incremental by default?
-- Where does the effective time come from (questions 3 and 6)? `process.started_at` is the
-  same for the whole batch and rules out late-arriving records. A column of the record, such
-  as the source's `updated_at`, gives the business time but brings late-arriving records into
-  scope. An optional column could fall back on `process.started_at`.
-- What are the version columns (question 4)? `valid_from`, `valid_to` with `NULL` as the open
-  end, and `is_current`; a far-future date as the open end; or no `is_current`. Are the names
-  arguments?
-- Which columns are tracked (question 2)? Every column except the keys and the version
-  columns, or an optional list. With a list, does a change in an untracked column get ignored,
-  or overwrite the current version in place, as SCD1?
-- Is a duplicate business key in one batch an error before anything is written (question 7)?
-  "The last record wins" needs an ordering column, since a DataFrame has no order.
-- Are changes detected by a null-safe comparison of the tracked values, or by a hash stored in
-  a column (question 8)?
-- A Spark DataFrame is lazy, so the comparison with the current versions is a join and not a
-  materialised batch (question 9). Does a rewrite of the whole target close the door to
-  streaming ([ADR 0012](decisions/0012-streaming-deferred.md))?
-- What are the name and the module (question 10)? `SCD2`, or a name in the form of the shipped
-  strategies `AppendOnly` and `FullLoad`; in `callback/io.py` next to them, or a module of its
-  own?

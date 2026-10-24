@@ -1,6 +1,7 @@
 # 0015. Choose the reader and the writer from the job's configuration file
 
-- **Status:** accepted, amended by [0016](0016-make-each-write-strategy-one-callback.md)
+- **Status:** accepted, amended by [0016](0016-make-each-write-strategy-one-callback.md) and
+  [0017](0017-read-a-library-callbacks-own-parameters-from-a-section-named-after-it.md)
 - **Recorded:** 2026-10-23
 - **Evidence:** [specs/config_connectors.md](../../specs/config_connectors.md), decisions 1 to 17,
   taken by the maintainer on 2026-10-23, and the reasons the maintainer gave the same day,
@@ -9,7 +10,9 @@
   [ADR 0003](0003-connectors-as-protocols.md) and
   [ADR 0013](0013-connector-configuration-convention.md). It is amended by
   [ADR 0016](0016-make-each-write-strategy-one-callback.md), which replaces `WriteTarget` with
-  `AppendOnly` and `FullLoad`.
+  `AppendOnly` and `FullLoad`. It is amended by
+  [ADR 0017](0017-read-a-library-callbacks-own-parameters-from-a-section-named-after-it.md), which
+  adds the `scd2` section to the shape of the file.
 
 ## Context
 
@@ -34,7 +37,10 @@
   each write callback, each naming its system with the key `system`. The names are the connector's
   class name in snake case without `Reader` or `Writer`: `json_api`, `json_lines`, `disk`,
   `postgres`, `s3`, `gcs`, `volume`, `unity_catalog`, `bigquery`. The other keys of a section
-  are the connector's constructor arguments of the same name.
+  are the connector's constructor arguments of the same name. (Amended by
+  [ADR 0017](0017-read-a-library-callbacks-own-parameters-from-a-section-named-after-it.md): a
+  third section, `scd2`, holds the parameters of `SCD2`, which only that callback reads. The top
+  level stays the job's except for the names `source`, `target` and `scd2`.)
 - **What does not belong in the JSON** reaches the callback as arguments: credentials, such as
   a `PostgresConnection` the job builds from its own secrets, SDK clients (`client=`), and
   per-run values such as `watermark_value`. The library still never reads secrets.

@@ -16,7 +16,8 @@
   [philosophy](../philosophy.md#connector), which says a connector decides no write strategy.
   `WriteTarget` hid it by building the writer with `append=not replace` and branching on the
   writer's type when it wrote.
-- SCD2 is planned as a write strategy ([specs/scd2_callback.md](../../specs/scd2_callback.md)).
+- SCD2 was planned as a write strategy ([specs/scd2_callback.md](../../specs/scd2_callback.md)).
+  It has since shipped as `SCD2`, one more callback built as this decision says.
 
 ## Decision
 
@@ -30,8 +31,8 @@
   `write(data, *, replace=False)`, like every other shipped writer. `AppendOnly` calls
   `write(data)` and `FullLoad` calls `write(data, replace=True)`, for every system, with no branch
   on the writer's type.
-- **A write strategy the library adds later** (SCD2, a merge) is one more callback that builds its
-  writer from the `target` section. The configuration has no mode.
+- **A write strategy the library adds later** (`SCD2`, since shipped, or a merge) is one more
+  callback that builds its writer from the `target` section. The configuration has no mode.
 - **An empty batch always calls the writer.** The callbacks hand `state[key]` to the writer as it
   is, never copied, converted, iterated, counted or type-checked, and leave the state unchanged.
   What an empty write does to the target is the connector's
@@ -42,7 +43,7 @@
 ## Rationale
 
 The maintainer's reason for the separate callbacks: each write strategy is one callback, as SCD2
-will be.
+is.
 
 For removing `append` from `JsonLinesWriter`, the purpose the maintainer stated is that no
 connector decides the write strategy any more, which is the philosophy's sentence on connectors.

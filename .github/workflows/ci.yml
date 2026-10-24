@@ -12,6 +12,10 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
+    # Runs the opt-in tests against a local Spark session. The runner's default Java 17 is one
+    # the locked pyspark supports.
+    env:
+      INGESTIO_SPARK_TESTS: "1"
     strategy:
       fail-fast: false
       matrix:

@@ -1,13 +1,14 @@
 # Configuration
 
 A job names its source and its target in a JSON configuration file. `ReadSource` and
-the write callbacks, `AppendOnly` and `FullLoad`, take the path of that file, read it and build the
-[connector](connectors.md) it names, so the code of the job only places callbacks. Changing the
-source from disk to S3 is an edit of the JSON. The decisions are recorded in [ADR
-0015](../decisions/0015-choose-connectors-from-the-job-configuration.md) and [ADR
-0016](../decisions/0016-make-each-write-strategy-one-callback.md).
+the write callbacks, `AppendOnly`, `FullLoad` and `SCD2`, take the path of that file, read it and
+build the [connector](connectors.md) it names, so the code of the job only places callbacks.
+Changing the source from disk to S3 is an edit of the JSON. The decisions are recorded in [ADR
+0015](../decisions/0015-choose-connectors-from-the-job-configuration.md), [ADR
+0016](../decisions/0016-make-each-write-strategy-one-callback.md) and [ADR
+0017](../decisions/0017-read-a-library-callbacks-own-parameters-from-a-section-named-after-it.md).
 
-`ReadSource`, `AppendOnly` and `FullLoad` are the only way the library's callbacks reach a
+`ReadSource`, `AppendOnly`, `FullLoad` and `SCD2` are the only way the library's callbacks reach a
 connector: they do not accept a connector instance, and only the connectors the library ships can be named. A job's
 own callback can still build a shipped connector itself, as [Using a
 connector](connectors.md#using-a-connector) shows.
@@ -24,9 +25,15 @@ connector](connectors.md#using-a-connector) shows.
 
 - The top level is a JSON object. `ReadSource` reads its `source` member and the write callbacks
   their `target` member, each a JSON object, the *section*. A file with only a `source` section is
-  enough for a `ReadSource`, and a file with only a `target` section for a write callback.
-- Every other top-level member, such as `primary_key` above, belongs to the job: every callback
-  ignores it, and each ignores the other's section, whatever it holds.
+  enough for a `ReadSource`, and a file with only a `target` section for `AppendOnly` or
+  `FullLoad`. `SCD2` also reads the `scd2` section, [described below](#the-scd2-section).
+- The names `source`, `target` and `scd2` are the library's. Every other top-level member, such as
+  `primary_key` above, belongs to the job: every callback ignores it, and each ignores the sections
+  of the others, whatever they hold. A library callback with parameters of its own reads them from
+  one section named after its class in snake case, and no other callback reads it ([ADR
+  0017](../decisions/0017-read-a-library-callbacks-own-parameters-from-a-section-named-after-it.md)).
+  The names the library reserves are therefore a closed set, derived from its callbacks, and a job
+  with a member of its own named `scd2` renames it before placing `SCD2`.
 - A section names its system with the key `system`. Every other key of the section is the
   constructor argument of the same name of the connector that the system builds, passed as it
   is: nothing is renamed or converted. The documentation of a connector's arguments is the
@@ -46,20 +53,22 @@ connector](connectors.md#using-a-connector) shows.
 ReadSource(config, *, into="records", connection=None, client=None, watermark_value=None, spark=None)
 AppendOnly(config, *, key="records", connection=None, client=None)
 FullLoad(config, *, key="records", connection=None, client=None)
+SCD2(config, *, key="records", connection=None, client=None)
 ```
 
-All three are exported by `ingestio` and by `ingestio.callback.all`.
+All four are exported by `ingestio` and by `ingestio.callback.all`.
 
 - `config` is the path of the file, a `str` or an `os.PathLike[str]` such as a `pathlib.Path`,
   and the only positional argument. A relative path is resolved against the working directory
   when the callback is built. Anything else raises `TypeError`, a connector instance included.
 - `into` is the key of `Process.state` that receives the payload, and `key` the key that
-  `AppendOnly` or `FullLoad` writes. Both default to `"records"`.
-- The write callbacks take no `replace`, `spark` or `watermark_value`: which of the two to place is
-  the choice of write strategy.
+  `AppendOnly`, `FullLoad` or `SCD2` writes. Both default to `"records"`.
+- The write callbacks take no `replace`, `spark` or `watermark_value`: which of them to place is
+  the choice of write strategy. `SCD2` takes no column names either: they are in its `scd2` section.
 - The callback reads the file once, when it is built. Changing or deleting it afterwards changes
   nothing: the process runs with what was read. Each callback reads the file for itself, so a
   process with a `ReadSource` and an `AppendOnly` built from the same path reads it twice.
+  `SCD2` reads it once for both of its sections.
 - Building a callback reads and checks the file and builds the connector, and nothing else: it
   touches no Spark session, no client and no network. A mistake anywhere in the file raises when
   the callback is built, before `Process` exists and before anything runs.
@@ -153,8 +162,10 @@ The keys of a section, besides `system`:
   through `ReadSource`.
 - `headers` of `json_api` is not a place for credentials: `JsonApiReader` does not support
   endpoints that require authentication.
-- The configuration has no mode: whether a write appends or replaces is the choice of the callback
-  the job places, `AppendOnly` or `FullLoad`.
+- The configuration has no mode: whether a write appends, replaces or keeps a history is the choice
+  of the callback the job places, `AppendOnly`, `FullLoad` or `SCD2`. The `scd2` section chooses no
+  write strategy.
+- `SCD2` supports only the `unity_catalog`, `postgres` and `bigquery` targets; see [Callbacks](callbacks.md#supported-target-systems).
 
 ### JSON types
 
@@ -182,10 +193,49 @@ The job chooses the write strategy by the callback it places.
 - A job that appends to one target and replaces another uses two configuration files, one per
   callback.
 
+## The `scd2` section
+
+A top-level member of the file, a JSON object, read by `SCD2` only. `ReadSource`, `AppendOnly` and
+`FullLoad` ignore it, whatever it holds, and `SCD2` ignores `source` and every other member. A file
+whose `target` is written by `AppendOnly` may hold an `scd2` section.
+
+```json
+{
+  "target": {"system": "unity_catalog", "table_name": "main.gold.dim_customer"},
+  "scd2": {
+    "key_columns": ["customer_id"],
+    "effective_time_column": "updated_at",
+    "tracked_columns": ["name", "city", "segment"]
+  }
+}
+```
+
+| Key | Required | JSON type | Meaning |
+|---|---|---|---|
+| `key_columns` | yes | non-empty array of non-empty strings, no column twice | the columns whose values identify an entity, its business key |
+| `effective_time_column` | yes | non-empty string | the column of the record that holds the time from which the record's state holds |
+| `tracked_columns` | no | non-empty array of non-empty strings, no column twice | the columns whose change opens a new version. Every column of the batch except the key columns and the effective-time column when left out |
+| `valid_from_column` | no | non-empty string | the version column that holds the start of a version. `valid_from` when left out |
+| `valid_to_column` | no | non-empty string | the version column that holds the end of a version, `null` while the version is current. `valid_to` when left out |
+
+- The section is strict, as `source` and `target` are: a key not in the table is an error, and
+  `null` is never a value.
+- The names are column names, compared with each other and with the columns of the batch and of the
+  target ignoring case, as Spark resolves them by default. A name is one top-level column: a `.` in
+  it is part of the name, not a nested field.
+- No column has two roles. The key columns, the effective-time column, the tracked columns and the
+  two version columns, the defaults included, name pairwise different columns.
+- The section names no system and chooses no write strategy: the configuration still has no mode.
+- The target must hold the batch's columns and the two version columns, and nothing else. The
+  effective-time column keeps the record's own value, and the callback checks no type.
+  [Callbacks](callbacks.md#scd2) describes what `SCD2` does with them.
+
+Changing the key columns or the tracked columns is an edit of the JSON. One dimension per file.
+
 ## Errors
 
 `<path>` is `os.fspath(config)` and `<section>` is `source` for `ReadSource` and `target` for
-`AppendOnly` and `FullLoad`. Every error of the callback's own checks is a `ValueError` whose message starts with
+`AppendOnly`, `FullLoad` and `SCD2`. Every error of the callback's own checks is a `ValueError` whose message starts with
 `<path>: `. The callback finds the first problem in this order, and raises it when it is built:
 
 | Case | Error |
@@ -207,6 +257,15 @@ The job chooses the write strategy by the callback it places.
 | `connection` is missing for `postgres` | `<path>: <section> system 'postgres' needs the argument connection` |
 | the connector rejects a value, such as `table_name: "orders"` for `unity_catalog` | the connector's `ValueError`, the same object, with one note |
 | the system's extra is not installed | the connector's `ImportError`, the same object, with one note |
+| `SCD2` only: `target.system` is not `bigquery`, `postgres` or `unity_catalog` | `<path>: target.system '<name>' is not one of: bigquery, postgres, unity_catalog` |
+| `SCD2` only: the `scd2` section is missing | `<path>: missing section 'scd2'` |
+| `SCD2` only: it is not an object | `<path>: section 'scd2' must be a JSON object` |
+| `SCD2` only: a key not in the table | `<path>: scd2.<key> is not a key of section 'scd2'` |
+| `SCD2` only: a required key is missing | `<path>: scd2.<key> is required` |
+| `SCD2` only: `effective_time_column`, `valid_from_column` or `valid_to_column` is not a non-empty string, or is `null` | `<path>: scd2.<key> must be a non-empty string` |
+| `SCD2` only: `key_columns` or `tracked_columns` is not a non-empty array of non-empty strings | `<path>: scd2.<key> must be a non-empty array of non-empty strings` |
+| `SCD2` only: a column twice in one array | `<path>: scd2.<key> names the column '<name>' twice` |
+| `SCD2` only: a column in two roles | `<path>: scd2.<role> and scd2.<later role> both name the column '<name>'` |
 | an argument the callback does not take, such as `replace=True` for `AppendOnly` | Python's `TypeError` for an unexpected keyword argument |
 | `read()` or `write()` fails | the error, unchanged, with no note, when the process runs |
 | `state[key]` is missing | `KeyError`, whose `args` are `(key,)`, when the process runs; the writer is not called |
@@ -217,6 +276,15 @@ The job chooses the write strategy by the callback it places.
 - The checks run in this order: the argument and the file, the JSON, the section, `system`, the
   keys in the order of the file, the required keys in the order of the tables above, the types in
   the order of the file, the callback arguments, and last the connector.
+- `SCD2` runs these for its `target` section first. Then it checks the `scd2` section: that it is
+  present and an object, its keys in the order of the file, its required keys (`key_columns`, then
+  `effective_time_column`), the type of each value in the order of the file (for an array, its
+  type, then that no column appears twice), and last that no column has two roles. The pairs of
+  roles are checked in this order: `key_columns` with each later role, `effective_time_column` with
+  each later role, `tracked_columns`, then `valid_from_column` with `valid_to_column`. The two
+  names are written as the earlier role writes them.
+- The errors that `SCD2` raises when the process runs, such as a missing column or a failed check,
+  are in [Callbacks](callbacks.md#the-checks).
 - The note is `while building the <section> of <path>, system '<system>'`, added with
   `add_note`. The error is not wrapped: its type, message and cause stay the connector's.
 - A callback that fails to build never reaches `Process`, so its error writes no line of the run's
@@ -333,7 +401,11 @@ job's install, because the BigQuery writer needs that extra.
 
 ## Known limitations
 
-- **One source and one target per file.** A job with two sources uses two files.
+- **One source and one target per file.** A job with two sources uses two files. `SCD2` adds one
+  more: one dimension per file.
+- **A job's own member named `scd2` is the library's.** `SCD2` reads it and rejects what it does not
+  expect, so the job renames its member before placing `SCD2`. `source`, `target` and `scd2` are
+  the reserved names.
 - **The watermark is computed before the process is built.** `watermark_value` is an argument of
   the callback, which the job builds before the run. A watermark that a step of the same process
   would compute cannot reach the reader.

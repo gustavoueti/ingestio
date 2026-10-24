@@ -3,6 +3,7 @@
 import logging
 
 from ingestio.basics import (
+    SCD2,
     AppendOnly,
     Callback,
     CancelProcessException,
@@ -21,6 +22,7 @@ __version__ = "0.4.0"
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __all__ = [
+    "SCD2",
     "AppendOnly",
     "Callback",
     "CancelProcessException",
