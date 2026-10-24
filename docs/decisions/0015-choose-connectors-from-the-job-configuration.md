@@ -12,7 +12,9 @@
   [ADR 0016](0016-make-each-write-strategy-one-callback.md), which replaces `WriteTarget` with
   `AppendOnly` and `FullLoad`. It is amended by
   [ADR 0017](0017-read-a-library-callbacks-own-parameters-from-a-section-named-after-it.md), which
-  adds the `scd2` section to the shape of the file.
+  adds the `scd2` section to the shape of the file. It is amended on 2026-10-24 by
+  [specs/mongodb_reader.md](../../specs/mongodb_reader.md), which adds the `mongodb` system and
+  widens the `connection` argument per system.
 
 ## Context
 
@@ -36,7 +38,8 @@
 - **The shape of the file.** One `source` section for `ReadSource` and one `target` section for
   each write callback, each naming its system with the key `system`. The names are the connector's
   class name in snake case without `Reader` or `Writer`: `json_api`, `json_lines`, `disk`,
-  `postgres`, `s3`, `gcs`, `volume`, `unity_catalog`, `bigquery`. The other keys of a section
+  `postgres`, `s3`, `gcs`, `volume`, `unity_catalog`, `bigquery`, `mongodb` (a source only, added
+  by [specs/mongodb_reader.md](../../specs/mongodb_reader.md)). The other keys of a section
   are the connector's constructor arguments of the same name. (Amended by
   [ADR 0017](0017-read-a-library-callbacks-own-parameters-from-a-section-named-after-it.md): a
   third section, `scd2`, holds the parameters of `SCD2`, which only that callback reads. The top
@@ -106,6 +109,22 @@ the library or a feature request, not through the job's code.
 - **`ReadSource`, `AppendOnly` and `FullLoad` stay essential** ([ADR 0011](0011-callbacks-as-stages-with-criticality.md)):
   every error propagates, and configuration errors are raised when the callback is built, before
   anything runs.
+- **The `connection` argument takes the connection value of the system that needs one**
+  (amendment of 2026-10-24, [spec](../../specs/mongodb_reader.md)). `ReadSource` takes a
+  `PostgresConnection` for a `postgres` source and a `MongoDBConnection` for a `mongodb` source,
+  one existing argument widened per system. `AppendOnly`, `FullLoad` and `SCD2` keep
+  `PostgresConnection`, because `mongodb` is not a target: there is no MongoDB writer, a scope
+  decision whose reason is `TODO(maintainer)`. A later system with credentials, such as backlog
+  idea 8, would follow the same pattern. Why the existing argument widens rather than a new
+  argument being added: `TODO(maintainer)`. The technical reason the maintainer gave for the value
+  itself: the job reads the connection string from a secret store at run time and hands it to the
+  connector, so it never sits in the configuration.
+- **The callbacks check the type of `connection`** when they are built, for every system that
+  takes one, in `ReadSource`, `AppendOnly`, `FullLoad` and `SCD2`. A connection of another
+  system's class raises a `ValueError` with the file's path and the system in the message, before
+  anything runs, instead of an `AttributeError` when the process runs. The check lives in the
+  callbacks, not in the connectors, which stay unchanged. (The spec gives this reason as the
+  description of the option the maintainer chose, marked for the maintainer's review.)
 - **Nothing closes the door to streaming** ([ADR 0012](0012-streaming-deferred.md)). The
   `Reader` and `Writer` protocols and their open payload do not change, and a streaming
   connector would be one more shipped system in the table, with keys of its own.

@@ -14,7 +14,8 @@
   Amended on 2026-10-23 by [ADR 0015](0015-choose-connectors-from-the-job-configuration.md) and
   [specs/config_connectors.md](../../specs/config_connectors.md): the library's read and write
   callbacks read the job's configuration file and map the keys of its sections to these
-  arguments.
+  arguments. Extended on 2026-10-24 to the MongoDB reader by
+  [specs/mongodb_reader.md](../../specs/mongodb_reader.md).
 
 ## Context
 
@@ -115,6 +116,13 @@ own configuration and its own secrets.
   Databricks SDK for `VolumeReader`, which follows the SDK's default authentication, and the
   default clients of the other SDKs that later connectors use. A job that wants other
   credentials builds the client itself and passes it.
+- The MongoDB reader follows the convention unchanged: `database`, `collection`,
+  `watermark_column`, `schema_hints` and `options` are configuration keys, and the connection
+  string, credentials included, stays out of the configuration, in a `MongoDBConnection` that the
+  job builds from its secret store. The `$match` stage that the MongoDB Spark Connector pushes down
+  for the reader's comparisons is how `MongoDBReader` filters inside the source: the documents
+  outside the slice never leave MongoDB ([spec](../../specs/mongodb_reader.md)).
 - A reader that filters inside the source cannot offer a free-form query, because a custom
-  query cannot safely be bounded by a watermark.
+  query cannot safely be bounded by a watermark. `MongoDBReader` reserves the connector's
+  `aggregation.pipeline` option for this reason.
 - Nothing here closes the door to streaming.

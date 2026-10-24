@@ -88,16 +88,12 @@ These questions apply to both:
 
 **Idea.** A connector for MongoDB.
 
-**Open questions.**
+**Spec.** The reader is [specs/mongodb_reader.md](../specs/mongodb_reader.md): `MongoDBReader`
+on the MongoDB Spark Connector, with `schema_hints` and a `watermark_column`. It settles the
+engine, the watermark and the schema. The writer and change streams stay here as open ideas.
 
-- Read, write or both?
-- Which engine? The MongoDB Spark Connector, a prerequisite JAR, pushes filters and
-  aggregation pipelines into MongoDB. pymongo runs in the Python process.
-- Where does the watermark come from: a field such as `updatedAt`, or, for append-only
-  collections, the time inside the `_id` ObjectId?
-- Documents have no schema. Does the job pass one, or does Spark infer it by sampling? How are
-  nested documents and fields with mixed types handled? A section's `schema` key is a DDL string
-  in the systems that take one.
+**Open questions**, for the writer and change streams:
+
 - Is a non-atomic write acceptable for `AppendOnly` and `FullLoad`? The Spark connector writes in
   batches, not in one transaction, and multi-document transactions need a replica set and have
   limits. For `FullLoad`, the alternative is a staging collection, for example with `$out`,

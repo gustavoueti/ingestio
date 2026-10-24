@@ -54,12 +54,14 @@ is a change to the library, and this table grows with it.
 | [Databricks volumes](docs/concepts/connectors.md#volumes-volumereader-volumewriter) | `volume` | `VolumeReader` | `VolumeWriter` | yes | `databricks`, for a reader without `client` |
 | [Unity Catalog tables](docs/concepts/connectors.md#unity-catalog-unitycatalogreader-unitycatalogwriter) | `unity_catalog` | `UnityCatalogReader` | `UnityCatalogWriter` | yes | — |
 | [BigQuery](docs/concepts/connectors.md#bigquery-bigqueryreader-bigquerywriter) | `bigquery` | `BigQueryReader` | `BigQueryWriter` | yes | `bigquery`, for the writer, and for a reader with `watermark_column` |
+| [MongoDB](docs/concepts/connectors.md#mongodb-mongodbconnection-mongodbreader) | `mongodb` | `MongoDBReader` | — | yes | — |
 
 - **Spark:** the connector reads into a Spark DataFrame and writes from one. It expects a Spark
   session to be running already, and never starts one: Databricks provides it; elsewhere, create
   it before the process runs, for example with `SparkSession.builder.getOrCreate()`. Some systems
-  also need a package in that session, such as the PostgreSQL JDBC driver or Delta Lake on
-  open-source Spark: the system's link gives its environments and prerequisites.
+  also need a package in that session, such as the PostgreSQL JDBC driver, the MongoDB Spark
+  Connector or Delta Lake on open-source Spark: the system's link gives its environments and
+  prerequisites.
 - **Extra:** installed with `pip install 'ingestio[<extra>]'`, and needed only in the case the
   column names. pyspark is never an extra: the runtime provides it.
 - The keys each system takes are in
@@ -357,7 +359,7 @@ The whole behaviour, the checks and the errors are in
 
 ## Roadmap
 
-More connectors (MySQL with change data capture, MongoDB).
+More connectors (MySQL with change data capture, a MongoDB writer and change streams).
 
 ## License
 

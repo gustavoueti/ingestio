@@ -18,7 +18,8 @@ from ingestio.connector.bigquery import BigQueryReader, BigQueryWriter
 from ingestio.connector.gcs import GcsReader, GcsWriter
 from ingestio.connector.http import JsonApiReader
 from ingestio.connector.local import DiskReader, DiskWriter, JsonLinesWriter
-from ingestio.connector.postgres import PostgresReader, PostgresWriter
+from ingestio.connector.mongodb import MongoDBConnection, MongoDBReader
+from ingestio.connector.postgres import PostgresConnection, PostgresReader, PostgresWriter
 from ingestio.connector.s3 import S3Reader, S3Writer
 from ingestio.connector.unity_catalog import UnityCatalogReader, UnityCatalogWriter
 from ingestio.connector.volume import VolumeReader, VolumeWriter
@@ -39,6 +40,8 @@ class _System:
     arguments: tuple[str, ...] = ()
     # Arguments that must be given. Only `connection` is ever required.
     needed: tuple[str, ...] = ()
+    # The class that the `connection` argument must be an instance of.
+    connection_type: type | None = None
 
 
 _FILE_READ = ("watermark_pattern", "schema", "options")
@@ -54,6 +57,15 @@ _SOURCES: Mapping[str, _System] = MappingProxyType(
             ("watermark_column", "options"),
             ("connection", *_SPARK_READ),
             ("connection",),
+            PostgresConnection,
+        ),
+        "mongodb": _System(
+            MongoDBReader,
+            ("database", "collection"),
+            ("watermark_column", "schema_hints", "options"),
+            ("connection", *_SPARK_READ),
+            ("connection",),
+            MongoDBConnection,
         ),
         "s3": _System(S3Reader, ("path", "format"), _FILE_READ, ("client", *_SPARK_READ)),
         "gcs": _System(GcsReader, ("path", "format"), _FILE_READ, ("client", *_SPARK_READ)),
@@ -77,7 +89,12 @@ _TARGETS: Mapping[str, _System] = MappingProxyType(
         "json_lines": _System(JsonLinesWriter, ("path",), ("encoding",)),
         "disk": _System(DiskWriter, ("path", "format"), ("options",)),
         "postgres": _System(
-            PostgresWriter, ("table_name",), ("options",), ("connection",), ("connection",)
+            PostgresWriter,
+            ("table_name",),
+            ("options",),
+            ("connection",),
+            ("connection",),
+            PostgresConnection,
         ),
         "s3": _System(S3Writer, ("path", "format"), ("options",)),
         "gcs": _System(GcsWriter, ("path", "format"), ("options",)),
@@ -104,6 +121,9 @@ _STRING_KEYS = frozenset(
         "watermark_column",
         "volume",
         "billing_project",
+        "database",
+        "collection",
+        "schema_hints",
     }
 )
 
@@ -217,6 +237,17 @@ def _build(
     for argument in system.needed:
         if argument not in taken:
             raise _fail(path, f"{section} system '{name}' needs the argument {argument}")
+    connection = taken.get("connection")
+    if (
+        connection is not None
+        and system.connection_type is not None
+        and not isinstance(connection, system.connection_type)
+    ):
+        raise _fail(
+            path,
+            f"{section} system '{name}' needs a {system.connection_type.__name__} as the "
+            f"argument connection, not {type(connection).__name__}",
+        )
 
     parameters = {key: value for key, value in keys.items() if key != "system"}
     parameters.update(taken)

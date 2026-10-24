@@ -93,6 +93,13 @@ instance: only the connectors the library ships can be named. See
 
 All of them are essential: every error propagates out of the process unchanged.
 
+`connection` is the connection value of the system that needs one. `ReadSource` takes a
+`PostgresConnection` for a `postgres` source and a `MongoDBConnection` for a `mongodb` source: its
+annotation is `PostgresConnection | MongoDBConnection | None`. `AppendOnly`, `FullLoad` and `SCD2`
+keep `PostgresConnection`, because there is no MongoDB writer. Each callback checks the type of
+`connection` when it is built, and a connection of another system's class raises a `ValueError`
+that names the system and the class ([Configuration](configuration.md#errors)).
+
 `SCD2` is described [below](#scd2). `AppendOnly` and `FullLoad` take the same arguments and subclass `Callback` directly, neither one a
 subclass of the other. Neither takes `replace`, `spark` or `watermark_value`. Each calls the writer
 once, with the very object that `state[key]` holds: `AppendOnly` calls `write(data)` and `FullLoad`
