@@ -1,13 +1,14 @@
 # Configuration
 
 A job names its source and its target in a JSON configuration file. `ReadSource` and
-`WriteTarget` take the path of that file, read it and build the [connector](connectors.md) it
-names, so the code of the job only places callbacks. Changing the source from disk to S3 is an
-edit of the JSON. The decision is recorded in [ADR
-0015](../decisions/0015-choose-connectors-from-the-job-configuration.md).
+the write callbacks, `AppendOnly` and `FullLoad`, take the path of that file, read it and build the
+[connector](connectors.md) it names, so the code of the job only places callbacks. Changing the
+source from disk to S3 is an edit of the JSON. The decisions are recorded in [ADR
+0015](../decisions/0015-choose-connectors-from-the-job-configuration.md) and [ADR
+0016](../decisions/0016-make-each-write-strategy-one-callback.md).
 
-`ReadSource` and `WriteTarget` are the only way the library's callbacks reach a connector: they no
-longer accept a connector instance, and only the connectors the library ships can be named. A job's
+`ReadSource`, `AppendOnly` and `FullLoad` are the only way the library's callbacks reach a
+connector: they do not accept a connector instance, and only the connectors the library ships can be named. A job's
 own callback can still build a shipped connector itself, as [Using a
 connector](connectors.md#using-a-connector) shows.
 
@@ -21,11 +22,11 @@ connector](connectors.md#using-a-connector) shows.
 }
 ```
 
-- The top level is a JSON object. `ReadSource` reads its `source` member and `WriteTarget` its
-  `target` member, each a JSON object, the *section*. A file with only a `source` section is
-  enough for a `ReadSource`.
-- Every other top-level member, such as `primary_key` above, belongs to the job: both callbacks
-  ignore it, and each ignores the other's section, whatever it holds.
+- The top level is a JSON object. `ReadSource` reads its `source` member and the write callbacks
+  their `target` member, each a JSON object, the *section*. A file with only a `source` section is
+  enough for a `ReadSource`, and a file with only a `target` section for a write callback.
+- Every other top-level member, such as `primary_key` above, belongs to the job: every callback
+  ignores it, and each ignores the other's section, whatever it holds.
 - A section names its system with the key `system`. Every other key of the section is the
   constructor argument of the same name of the connector that the system builds, passed as it
   is: nothing is renamed or converted. The documentation of a connector's arguments is the
@@ -43,24 +44,26 @@ connector](connectors.md#using-a-connector) shows.
 
 ```text
 ReadSource(config, *, into="records", connection=None, client=None, watermark_value=None, spark=None)
-WriteTarget(config, *, key="records", replace=False, connection=None, client=None)
+AppendOnly(config, *, key="records", connection=None, client=None)
+FullLoad(config, *, key="records", connection=None, client=None)
 ```
 
-Both are exported by `ingestio` and by `ingestio.callback.all`.
+All three are exported by `ingestio` and by `ingestio.callback.all`.
 
 - `config` is the path of the file, a `str` or an `os.PathLike[str]` such as a `pathlib.Path`,
   and the only positional argument. A relative path is resolved against the working directory
-  when the callback is built. Anything else raises `TypeError`, a connector instance included,
-  which tells a job still written in the old form what changed.
+  when the callback is built. Anything else raises `TypeError`, a connector instance included.
 - `into` is the key of `Process.state` that receives the payload, and `key` the key that
-  `WriteTarget` writes. Both default to `"records"`.
+  `AppendOnly` or `FullLoad` writes. Both default to `"records"`.
+- The write callbacks take no `replace`, `spark` or `watermark_value`: which of the two to place is
+  the choice of write strategy.
 - The callback reads the file once, when it is built. Changing or deleting it afterwards changes
   nothing: the process runs with what was read. Each callback reads the file for itself, so a
-  process with a `ReadSource` and a `WriteTarget` built from the same path reads it twice.
+  process with a `ReadSource` and an `AppendOnly` built from the same path reads it twice.
 - Building a callback reads and checks the file and builds the connector, and nothing else: it
   touches no Spark session, no client and no network. A mistake anywhere in the file raises when
   the callback is built, before `Process` exists and before anything runs.
-- Both callbacks are essential ([ADR
+- Every callback is essential ([ADR
   0011](../decisions/0011-callbacks-as-stages-with-criticality.md)): nothing is caught, and
   every error of `read()` and `write()` propagates out of `Process.run()` unchanged.
 
@@ -144,14 +147,14 @@ The keys of a section, besides `system`:
 - The required keys are the connector's positional arguments other than `connection`. A key that
   is left out leaves the argument at its default.
 - Not keys: the callback arguments above (`connection`, `client`, `watermark_value`, `spark`),
-  `append` of `JsonLinesWriter`, which `WriteTarget` sets from `replace`, and any credential, such
-  as `user`, `password` or `host`. Like any other key a system does not take, they are rejected.
+  `append`, `replace` and `mode`, and any credential, such as `user`, `password` or `host`. Like
+  any other key a system does not take, they are rejected.
 - `schema` is a DDL string, such as `"id INT, payload STRING"`. A `StructType` cannot be given
   through `ReadSource`.
 - `headers` of `json_api` is not a place for credentials: `JsonApiReader` does not support
   endpoints that require authentication.
-- The configuration has no mode: whether a write appends or replaces is the `replace` argument of
-  `WriteTarget`.
+- The configuration has no mode: whether a write appends or replaces is the choice of the callback
+  the job places, `AppendOnly` or `FullLoad`.
 
 ### JSON types
 
@@ -168,19 +171,21 @@ parses them, `int` or `float`.
 
 ## Append and replace
 
-`WriteTarget` chooses the write strategy with its `replace` argument.
+The job chooses the write strategy by the callback it places.
 
-- `replace=False`, the default, appends: `write(data)` for every system but `json_lines`, and a
-  `JsonLinesWriter` built with `append=True`, which adds lines to the file.
-- `replace=True` replaces: `write(data, replace=True)` for every system but `json_lines`, and a
-  `JsonLinesWriter` built with `append=False`, which replaces the file.
-- So `WriteTarget` appends to every target by default. What `write(data, replace=True)` does is
-  the connector's, as its section says (`TRUNCATE`, an overwrite, a `MERGE`).
+- `AppendOnly` calls `write(data)` on the writer it built: it adds the data to the target and
+  leaves what the target holds as it is.
+- `FullLoad` calls `write(data, replace=True)`: the target ends up holding exactly the data.
+- Both do so for every system, `json_lines` included, with no branch on the writer's type. What
+  `write(data)` and `write(data, replace=True)` do is the connector's, as its section says
+  (`TRUNCATE`, an overwrite, a `MERGE`).
+- A job that appends to one target and replaces another uses two configuration files, one per
+  callback.
 
 ## Errors
 
 `<path>` is `os.fspath(config)` and `<section>` is `source` for `ReadSource` and `target` for
-`WriteTarget`. Every error of the callback's own checks is a `ValueError` whose message starts with
+`AppendOnly` and `FullLoad`. Every error of the callback's own checks is a `ValueError` whose message starts with
 `<path>: `. The callback finds the first problem in this order, and raises it when it is built:
 
 | Case | Error |
@@ -202,8 +207,9 @@ parses them, `int` or `float`.
 | `connection` is missing for `postgres` | `<path>: <section> system 'postgres' needs the argument connection` |
 | the connector rejects a value, such as `table_name: "orders"` for `unity_catalog` | the connector's `ValueError`, the same object, with one note |
 | the system's extra is not installed | the connector's `ImportError`, the same object, with one note |
+| an argument the callback does not take, such as `replace=True` for `AppendOnly` | Python's `TypeError` for an unexpected keyword argument |
 | `read()` or `write()` fails | the error, unchanged, with no note, when the process runs |
-| `state[key]` is missing | `KeyError`, when the process runs |
+| `state[key]` is missing | `KeyError`, whose `args` are `(key,)`, when the process runs; the writer is not called |
 
 - `<names>` are the names valid for the section, sorted and separated by `, `: for a source
   `bigquery, disk, gcs, json_api, postgres, s3, unity_catalog, volume`, for a target
@@ -237,7 +243,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from ingestio import Process, ReadSource, Step, WriteTarget
+from ingestio import AppendOnly, Process, ReadSource, Step
 from ingestio.connector.all import PostgresConnection
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -259,7 +265,7 @@ with tempfile.TemporaryDirectory() as tmp:
     # Credentials come from the job: the environment, or dbutils.secrets.get on Databricks.
     shop = PostgresConnection("pg.internal", "shop", "ingest", "s3cret")
     extract = ReadSource(config, connection=shop, watermark_value=41)  # builds, reads nothing
-    load = WriteTarget(config)  # appends: replace=False
+    load = AppendOnly(config)  # adds to the target; FullLoad(config) would replace it
 
     Process(
         [Step("load", [load])],
@@ -270,7 +276,7 @@ with tempfile.TemporaryDirectory() as tmp:
     # A mistake in the file stops the job when the callback is built.
     config.write_text(json.dumps({"target": {"system": "mysql"}}), encoding="utf-8")
     try:
-        WriteTarget(config)
+        AppendOnly(config)
     except ValueError as error:
         print(error)
 ```
@@ -284,7 +290,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from ingestio import Callback, CancelStepException, Process, ReadSource, Step, WriteTarget
+from ingestio import AppendOnly, Callback, CancelStepException, Process, ReadSource, Step
 from ingestio.connector.all import PostgresConnection
 
 CONFIG = Path(__file__).with_name("config.json")
@@ -318,7 +324,7 @@ shop = PostgresConnection(
 
 Process([
     Step("extract", [ReadSource(CONFIG, connection=shop, watermark_value=last_watermark())]),
-    Step("load", [SkipEmptyBatch(), WriteTarget(CONFIG)]),
+    Step("load", [SkipEmptyBatch(), AppendOnly(CONFIG)]),
 ]).run()
 ```
 

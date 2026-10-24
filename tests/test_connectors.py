@@ -41,21 +41,6 @@ def test_missing_parent_directories_are_created(tmp_path: Path) -> None:
     assert target.exists()
 
 
-def test_writing_twice_replaces_by_default(tmp_path: Path) -> None:
-    target = tmp_path / "out.jsonl"
-    writer = JsonLinesWriter(target)
-    writer.write([{"id": 1}])
-    writer.write([{"id": 2}])
-    assert target.read_text(encoding="utf-8").splitlines() == ['{"id": 2}']
-
-
-def test_append_mode_keeps_previous_records(tmp_path: Path) -> None:
-    target = tmp_path / "out.jsonl"
-    JsonLinesWriter(target).write([{"id": 1}])
-    JsonLinesWriter(target, append=True).write([{"id": 2}])
-    assert len(target.read_text(encoding="utf-8").splitlines()) == 2
-
-
 def test_non_serialisable_values_do_not_break_the_write(tmp_path: Path) -> None:
     from datetime import UTC, datetime
 

@@ -53,8 +53,11 @@ integrate gets a connector contributed to the library, or a feature request
 ## Using a connector
 
 The library's callbacks that move data between a connector and the [shared
-state](callbacks.md#sharing-data), `ReadSource` and `WriteTarget`, build the connector themselves.
-The job names the system in its configuration file, and each callback takes the path of that file:
+state](callbacks.md#sharing-data), `ReadSource`, `AppendOnly` and `FullLoad`, build the connector
+themselves. The job names the system in its configuration file, and each callback takes the path of
+that file. `AppendOnly` calls the writer's `write(data)` and `FullLoad` calls
+`write(data, replace=True)`, so the callback the job places chooses the write strategy, never the
+connector:
 
 ```json
 {
@@ -69,7 +72,8 @@ the sections below, and credentials, clients and the watermark are arguments of 
 errors. Each connector section below says which `system` name and keys reach it.
 
 A job's own callback can still build a shipped connector itself, for a strategy that the library's
-callbacks do not offer. `Writer` annotates what it holds:
+callbacks do not offer. `Writer` annotates what it holds. This one adds the records to the file on
+each run:
 
 ```python
 from pathlib import Path
@@ -127,20 +131,53 @@ orders = JsonApiReader("https://api.example.com/v1/orders", timeout=10).read()
 
 ### `JsonLinesWriter`
 
-`ingestio.connector.all.JsonLinesWriter(path, *, append=False, encoding="utf-8")`
+```text
+JsonLinesWriter(path: Path | str, *, encoding: str = "utf-8")
 
-Writes records as newline-delimited JSON, one object per line.
+JsonLinesWriter.write(data: Iterable[Mapping[str, Any]], *, replace: bool = False) -> None
+```
+
+Writes records as newline-delimited JSON, one object per line. Like every other shipped writer,
+its `write(data, *, replace=False)` leaves the write strategy to the caller.
 
 In a configuration: `"system": "json_lines"` in the `target` section, with the keys `path`
-(required) and `encoding`. `append` is not a key: `WriteTarget` builds the writer with
-`append=True`, or with `append=False` when it is given `replace=True`. It takes no callback
+(required) and `encoding`. `append`, `replace` and `mode` are not keys. It takes no callback
 argument.
 
-- Creates missing parent directories.
-- Replaces the file on each write, or appends to it with `append=True`.
+- `write(data)` appends: it adds one line per record after what the file holds, and creates the
+  file when it is missing. `JsonLinesWriter(path).write(data)` appends; it does not replace the
+  file.
+- `write(data, replace=True)` empties the file, or creates it, and then writes one line per
+  record, so the file holds exactly the records of `data`. `replace` is keyword-only.
+- Creates missing parent directories, in both modes.
+- `data` is consumed once, record by record, as it is iterated, so a generator is written without
+  being turned into a list first.
 - Serialises values JSON does not know, such as datetimes, with `str`.
 - A Databricks volume is an ordinary path, so the same writer serves a local disk and a
   cluster.
+- `AppendOnly` and `FullLoad` choose between the two modes. An empty `data` creates a missing
+  file, empty, and with `replace=True` leaves the file empty.
+- **A failed write is not atomic.** An error while iterating `data` or writing leaves what was
+  written before it. An append leaves part of the batch at the end of the file; a replace has
+  already emptied the file, so the file holds only that part and the previous content is lost.
+
+```python
+import tempfile
+from pathlib import Path
+
+from ingestio.connector.all import JsonLinesWriter
+
+with tempfile.TemporaryDirectory() as tmp:
+    path = Path(tmp) / "out" / "orders.jsonl"
+    writer = JsonLinesWriter(path)
+
+    writer.write([{"id": 1}, {"id": 2}])
+    writer.write([{"id": 3}])  # appends
+    print(path.read_text(encoding="utf-8"))  # three lines
+
+    writer.write([{"id": 4}], replace=True)
+    print(path.read_text(encoding="utf-8"))  # one line
+```
 
 ### PostgreSQL: `PostgresConnection`, `PostgresReader`, `PostgresWriter`
 
@@ -159,7 +196,7 @@ environments](#supported-environments).
 
 In a configuration: `"system": "postgres"`, in the `source` section with the keys `table_name`
 (required), `watermark_column` and `options`, and in the `target` section with `table_name`
-(required) and `options`. `ReadSource` and `WriteTarget` both need the argument `connection`, a
+(required) and `options`. `ReadSource`, `AppendOnly` and `FullLoad` all need the argument `connection`, a
 `PostgresConnection` that the job builds; `ReadSource` also takes `watermark_value` and `spark`.
 The host, the database and the credentials are never keys.
 
@@ -325,8 +362,8 @@ building a `PostgresWriter` without it raises
   the same transaction, so the target ends up holding exactly the rows of `data`.
 - The calling callback chooses at call time, by passing `replace`. The connector's
   configuration has no mode and there is no `replace()` method. Anything built on top, such as
-  a merge, belongs to callbacks. `WriteTarget` calls `write(data)`, which appends, unless it is
-  given `replace=True`.
+  a merge, belongs to callbacks. `AppendOnly` calls `write(data)`, which appends, and `FullLoad`
+  calls `write(data, replace=True)`.
 - `options` holds Spark JDBC write options passed through, such as `numPartitions` or
   `batchsize`. The writer sets `stringtype` to `unspecified`, which lets Spark strings go into
   `uuid`, `jsonb` and enum columns, and `reWriteBatchedInserts` to `true`, which makes batched
@@ -398,8 +435,8 @@ except ValueError as error:
     print(error)
 ```
 
-A job on Databricks: the file names the tables, the secrets stay in the job, and the loading
-callback chooses to replace. `/Workspace/jobs/orders.json`:
+A job on Databricks: the file names the tables, the secrets stay in the job, and the job places
+`FullLoad` to replace the target. `/Workspace/jobs/orders.json`:
 
 ```json
 {
@@ -410,7 +447,7 @@ callback chooses to replace. `/Workspace/jobs/orders.json`:
 
 <!-- example: skip -->
 ```python
-from ingestio import Process, ReadSource, Step, WriteTarget
+from ingestio import FullLoad, Process, ReadSource, Step
 from ingestio.connector.all import PostgresConnection
 
 CONFIG = "/Workspace/jobs/orders.json"
@@ -432,7 +469,7 @@ Process([
             watermark_value=last_watermark,  # computed by the job: from the target, a control table...
         )
     ]),
-    Step("load", [WriteTarget(CONFIG, key="orders", replace=True, connection=shop)]),
+    Step("load", [FullLoad(CONFIG, key="orders", connection=shop)]),
 ]).run()
 ```
 
@@ -677,7 +714,8 @@ data.write.format("delta").options(<options>).mode(<mode>).saveAsTable(<quoted t
 ```
 
 - `write(data)` appends: it adds every row of `data` to the table and leaves the existing rows as
-  they are. `WriteTarget` calls `write(data)`, which appends, unless it is given `replace=True`.
+  they are. `AppendOnly` calls `write(data)`, which appends, and `FullLoad` calls
+  `write(data, replace=True)`.
 - `write(data, replace=True)` replaces: the table ends up holding exactly the rows of `data`. The
   writer adds the option `partitionOverwriteMode` = `static`, so this holds on a partitioned table
   too, even when the session sets `spark.sql.sources.partitionOverwriteMode` to `dynamic`, which
@@ -794,7 +832,7 @@ for build in (
 ```
 
 A job on Databricks: the tables are in the configuration, the watermark stays in the job, and the
-next watermark is taken from the DataFrame that was read. `WriteTarget` appends.
+next watermark is taken from the DataFrame that was read. `AppendOnly` appends.
 `/Workspace/jobs/orders.json`:
 
 ```json
@@ -808,7 +846,7 @@ next watermark is taken from the DataFrame that was read. `WriteTarget` appends.
 ```python
 from pyspark.sql import functions as F
 
-from ingestio import Process, ReadSource, Step, WriteTarget
+from ingestio import AppendOnly, Process, ReadSource, Step
 
 CONFIG = "/Workspace/jobs/orders.json"
 
@@ -820,7 +858,7 @@ process = Process([
             watermark_value=last_watermark,  # kept by the job: a str with its offset, see below
         )
     ]),
-    Step("load", [WriteTarget(CONFIG, key="orders")]),
+    Step("load", [AppendOnly(CONFIG, key="orders")]),
 ]).run()
 
 # The bound is not exposed: the job takes its next watermark from the DataFrame. Rendering it
@@ -1127,7 +1165,8 @@ Writes a Spark DataFrame into a BigQuery table that already exists, atomically.
 The writer takes no session: it uses `data.write`.
 
 - `write(data)` appends: it inserts every row of `data` into the target and leaves the existing
-  rows alone. `WriteTarget` calls `write(data)`, which appends, unless it is given `replace=True`.
+  rows alone. `AppendOnly` calls `write(data)`, which appends, and `FullLoad` calls
+  `write(data, replace=True)`.
 - `write(data, replace=True)` replaces: in one statement it deletes every row of the target and
   inserts every row of `data`, so the target ends up holding exactly the rows of `data`. On a
   partitioned table this is every partition, not only those `data` touches. The target's
@@ -1285,8 +1324,8 @@ for build in (
 ```
 
 A job on Databricks: the tables are in the configuration, the watermark stays in the job, the
-credentials come from the cluster's environment, and the second callback chooses to replace. Two
-targets use two files, one target per file. `/Workspace/jobs/orders.json`:
+credentials come from the cluster's environment, and the job places `AppendOnly` for the first
+target and `FullLoad` for the second. Two targets use two files, one target per file. `/Workspace/jobs/orders.json`:
 
 ```json
 {
@@ -1314,7 +1353,7 @@ and `/Workspace/jobs/orders_snapshot.json`:
 
 <!-- example: skip -->
 ```python
-from ingestio import Process, ReadSource, Step, WriteTarget
+from ingestio import AppendOnly, FullLoad, Process, ReadSource, Step
 
 CONFIG = "/Workspace/jobs/orders.json"
 SNAPSHOT = "/Workspace/jobs/orders_snapshot.json"
@@ -1328,8 +1367,8 @@ Process([
         )
     ]),
     Step("load", [
-        WriteTarget(CONFIG, key="orders"),
-        WriteTarget(SNAPSHOT, key="orders", replace=True),
+        AppendOnly(CONFIG, key="orders"),
+        FullLoad(SNAPSHOT, key="orders"),
     ]),
 ]).run()
 ```
@@ -1575,8 +1614,8 @@ Writes a Spark DataFrame as files in a directory, in the format it is given: one
   not write included, and then writes the new files. With Delta, the overwrite is a new version
   of the table.
 - The calling callback chooses at call time, by passing `replace`. The configuration has no
-  mode and there is no `replace()` method. `WriteTarget` calls `write(data)`, which appends,
-  unless it is given `replace=True`. Merges and deduplication belong to callbacks.
+  mode and there is no `replace()` method. `AppendOnly` calls `write(data)`, which appends,
+  and `FullLoad` calls `write(data, replace=True)`. Merges and deduplication belong to callbacks.
 - Spark creates `path`, and its missing parents, when they do not exist. The writer itself
   creates, lists and deletes nothing, and does not retry.
 - The file names are Spark's (`part-<n>-<uuid>-c000...`), so a `DiskReader` that reads them
@@ -1704,7 +1743,7 @@ job, and the next watermark is taken from the files that were read.
 ```python
 from pyspark.sql import functions as F
 
-from ingestio import Process, ReadSource, Step, WriteTarget
+from ingestio import AppendOnly, Process, ReadSource, Step
 
 CONFIG = "/Workspace/jobs/orders_files.json"
 
@@ -1716,7 +1755,7 @@ process = Process([
             watermark_value=last_watermark,  # "20261020", kept by the job
         )
     ]),
-    Step("load", [WriteTarget(CONFIG, key="orders")]),
+    Step("load", [AppendOnly(CONFIG, key="orders")]),
 ]).run()
 
 # The selection is not exposed: the job takes its next watermark from the DataFrame.
@@ -1971,8 +2010,8 @@ creates and deletes nothing itself.
   write included, and then writes the new ones. With Delta, the overwrite is a new version of
   the table.
 - The calling callback chooses at call time, by passing `replace`. The configuration has no
-  mode and there is no `replace()` method. `WriteTarget` calls `write(data)`, which appends,
-  unless it is given `replace=True`.
+  mode and there is no `replace()` method. `AppendOnly` calls `write(data)`, which appends,
+  and `FullLoad` calls `write(data, replace=True)`.
 - The object names are Spark's (`part-<n>-<uuid>-c000...`), so an `S3Reader` that reads them
   back takes their watermark from their `LastModified`. Spark may also leave directory markers
   and `_SUCCESS`, which the reader ignores.
@@ -2077,7 +2116,7 @@ from datetime import UTC, datetime
 import boto3
 from pyspark.sql import functions as F
 
-from ingestio import Process, ReadSource, Step, WriteTarget
+from ingestio import AppendOnly, Process, ReadSource, Step
 
 CONFIG = "/Workspace/jobs/orders_s3.json"
 
@@ -2096,7 +2135,7 @@ process = Process([
             ),
         )
     ]),
-    Step("load", [WriteTarget(CONFIG, key="orders")]),
+    Step("load", [AppendOnly(CONFIG, key="orders")]),
 ]).run()
 
 # The selection is not exposed: the job takes its next watermark from the objects it read.
@@ -2367,8 +2406,8 @@ and lists, creates and deletes nothing itself.
   included, and then writes the new ones. With Delta, the overwrite is a new version of the
   table.
 - The calling callback chooses at call time, by passing `replace`. The configuration has no
-  mode and there is no `replace()` method. `WriteTarget` calls `write(data)`, which appends,
-  unless it is given `replace=True`.
+  mode and there is no `replace()` method. `AppendOnly` calls `write(data)`, which appends,
+  and `FullLoad` calls `write(data, replace=True)`.
 - The blob names are Spark's (`part-<n>-<uuid>-c000...`), so a `GcsReader` that reads them back
   takes their watermark from their `timeCreated`. The Cloud Storage connector may also leave
   directory placeholders and `_SUCCESS`, which the reader ignores.
@@ -2465,7 +2504,7 @@ from datetime import UTC, datetime, timedelta
 from google.cloud import storage
 from pyspark.sql import functions as F
 
-from ingestio import Process, ReadSource, Step, WriteTarget
+from ingestio import AppendOnly, Process, ReadSource, Step
 
 CONFIG = "/Workspace/jobs/orders_gcs.json"
 
@@ -2481,7 +2520,7 @@ process = Process([
             ),
         )
     ]),
-    Step("load", [WriteTarget(CONFIG, key="orders")]),
+    Step("load", [AppendOnly(CONFIG, key="orders")]),
 ]).run()
 
 # The selection is not exposed: the job takes its next watermark from the blobs it read.
@@ -2787,8 +2826,8 @@ lists, creates and deletes nothing itself.
   not write included, and then writes the new files. With Delta, the overwrite is a new version
   of the table.
 - The calling callback chooses at call time, by passing `replace`. The configuration has no
-  mode and there is no `replace()` method. `WriteTarget` calls `write(data)`, which appends,
-  unless it is given `replace=True`.
+  mode and there is no `replace()` method. `AppendOnly` calls `write(data)`, which appends,
+  and `FullLoad` calls `write(data, replace=True)`.
 - Spark creates the directory, and its missing parents inside the volume, when they do not
   exist. A volume that does not exist, or that the session may not write, fails in Spark.
 - The file names are Spark's (`part-<n>-<uuid>-c000...`), so a `VolumeReader` that reads them
@@ -2892,7 +2931,7 @@ from databricks.connect import DatabricksSession
 from databricks.sdk import WorkspaceClient
 from pyspark.sql import functions as F
 
-from ingestio import Process, ReadSource, Step, WriteTarget
+from ingestio import AppendOnly, Process, ReadSource, Step
 
 CONFIG = "jobs/orders_volume.json"
 
@@ -2910,7 +2949,7 @@ process = Process([
             spark=spark,
         )
     ]),
-    Step("load", [WriteTarget(CONFIG, key="orders")]),
+    Step("load", [AppendOnly(CONFIG, key="orders")]),
 ]).run()
 
 # The selection is not exposed: the job takes its next watermark from the files it read.
@@ -3014,17 +3053,11 @@ adds a column.
 
 ## Known divergence
 
-`JsonLinesWriter` decides two things the philosophy assigns to callbacks: the write strategy
-(`append`) and the format (JSON Lines). Moving them out changes the public API, so it waits
-for a spec. See [specs/append_only_callback.md](../../specs/append_only_callback.md).
-
-`WriteTarget` does not show the divergence: it appends to every target by default, a
-`json_lines` target included, which it builds as `JsonLinesWriter(append=True)`, and replaces
-every target with `replace=True`, which it builds as `JsonLinesWriter(append=False)`. For the
-other writers it calls `write(data)` or `write(data, replace=True)`, which leave the choice to the
-calling callback. The divergence remains for a job's own callback that builds a `JsonLinesWriter`
-itself: `JsonLinesWriter(append=...)` fixes the choice when the writer is built, the opposite of
-`write(data, replace=...)`, and by default replaces the file.
+`JsonLinesWriter` decides one thing the philosophy assigns to callbacks: the format (JSON Lines).
+Moving it out changes the public API, so it waits for a spec. The write strategy is not a
+divergence any more: `JsonLinesWriter` offers `write(data, *, replace=False)` like every other
+shipped writer, and the callback chooses ([ADR
+0016](../decisions/0016-make-each-write-strategy-one-callback.md)).
 
 ## Extras
 

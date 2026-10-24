@@ -20,7 +20,7 @@ a callback that only observes does not have to hand the data back." (`README.md`
 
 ## Consequences
 
-- Keys are conventions between callbacks: `ReadSource` and `WriteTarget` use `"records"` by
-  default and take the key as an option.
+- Keys are conventions between callbacks: `ReadSource`, `AppendOnly` and `FullLoad` use
+  `"records"` by default and take the key as an option.
 - A callback can depend on a key another callback must have written; nothing checks that
   before the run.

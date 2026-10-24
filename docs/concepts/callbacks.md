@@ -78,9 +78,11 @@ The column names are yours: ingestio has no opinion about them.
 | Callback | Does |
 |---|---|
 | `ReadSource(config, *, into="records", connection=None, client=None, watermark_value=None, spark=None)` | reads the `source` section of the job's configuration file, builds the reader it names, calls its `read()` and stores the payload in `state[into]` |
-| `WriteTarget(config, *, key="records", replace=False, connection=None, client=None)` | reads the `target` section, builds the writer it names and writes `state[key]` with it, appending, or replacing with `replace=True` |
+| `AppendOnly(config, *, key="records", connection=None, client=None)` | reads the `target` section, builds the writer it names and adds `state[key]` to the target, leaving what the target already holds as it is |
+| `FullLoad(config, *, key="records", connection=None, client=None)` | reads the `target` section, builds the writer it names and makes the target hold exactly `state[key]` |
 
-Both are exported by `ingestio` and by `ingestio.callback.all`. `config` is the path of the job's
+Each write strategy is one callback ([ADR 0016](../decisions/0016-make-each-write-strategy-one-callback.md)).
+All three are exported by `ingestio` and by `ingestio.callback.all`. `config` is the path of the job's
 JSON configuration file. The file names the system, such as `postgres` or `s3`, and holds the
 connector's parameters; credentials, SDK clients and the watermark reach the callback as its other
 arguments, because they do not belong in a JSON file. The callback reads the file when it is built,
@@ -88,14 +90,24 @@ so a mistake in it stops the job before anything runs. A callback does not accep
 instance: only the connectors the library ships can be named. See
 [Configuration](configuration.md) for the file, the systems and their keys, and the errors.
 
-Both are essential: every error propagates out of the process unchanged.
+All of them are essential: every error propagates out of the process unchanged.
+
+`AppendOnly` and `FullLoad` take the same arguments and subclass `Callback` directly, neither one a
+subclass of the other. Neither takes `replace`, `spark` or `watermark_value`. Each calls the writer
+once, with the very object that `state[key]` holds: `AppendOnly` calls `write(data)` and `FullLoad`
+calls `write(data, replace=True)`, for every system. The callback never copies, converts, iterates,
+counts or type-checks the value, so a generator reaches the writer unconsumed. It leaves the state as
+it found it, and a missing `state[key]` raises `KeyError` when the process runs. What a write does
+to the target is the connector's, as [its section](connectors.md) says: for instance, `AppendOnly`
+adds lines to a `json_lines` file and rows to a table, and `FullLoad` empties the file, truncates the
+table or overwrites the files.
 
 ```python
 import json
 import tempfile
 from pathlib import Path
 
-from ingestio import Process, Step, WriteTarget
+from ingestio import AppendOnly, FullLoad, Process, Step
 
 with tempfile.TemporaryDirectory() as tmp:
     out = Path(tmp) / "orders.jsonl"
@@ -105,16 +117,40 @@ with tempfile.TemporaryDirectory() as tmp:
     )
 
     Process(
-        [Step("load", [WriteTarget(config, key="orders")])],
+        [Step("load", [AppendOnly(config, key="orders")])],
         state={"orders": [{"id": 1}, {"id": 2}]},
     ).run()
-    print(out.read_text(encoding="utf-8"))
+    Process(
+        [Step("load", [AppendOnly(config, key="orders")])],
+        state={"orders": [{"id": 3}]},
+    ).run()
+    print(out.read_text(encoding="utf-8"))  # three lines
+
+    Process(
+        [Step("load", [FullLoad(config, key="orders")])],
+        state={"orders": [{"id": 4}]},
+    ).run()
+    print(out.read_text(encoding="utf-8"))  # one line
 ```
 
-Append-only and SCD2 will be
-the library's default callbacks; they are planned in
-[specs/append_only_callback.md](../../specs/append_only_callback.md) and
-[specs/scd2_callback.md](../../specs/scd2_callback.md).
+Known limitations of the write callbacks:
+
+- **An append is not idempotent.** Running the same batch twice appends it twice.
+- **`FullLoad` over an empty batch empties the target.** The callback calls the writer whatever
+  the value holds, an empty list, an exhausted generator or a DataFrame with no rows, because
+  checking a DataFrame runs a Spark job and checking a generator consumes it. A job that keeps its
+  target when a batch is empty places its own callback before the write, such as the
+  `SkipEmptyBatch` of [Configuration](configuration.md#example).
+- **A failed `json_lines` write leaves what was written before the failure.** An append leaves
+  part of the batch at the end of the file. A `FullLoad` has already emptied the file, so the file
+  holds only that part and the previous content is lost.
+- **`FullLoad` of plain files is not atomic** on `disk`, `s3`, `gcs` and `volume`: it deletes
+  everything under the path, and Spark refuses to overwrite a path that the DataFrame being written
+  reads from. A `delta` write is one commit.
+- **One target per file.** A job that appends to one target and replaces another uses two
+  configuration files, one per callback.
+
+SCD2 will be another write callback, planned in [specs/scd2_callback.md](../../specs/scd2_callback.md).
 
 ## Controlling the flow
 

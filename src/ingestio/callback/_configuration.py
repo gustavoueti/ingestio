@@ -147,8 +147,6 @@ def build_connector(
     config: str | os.PathLike[str],
     section: str,
     arguments: Mapping[str, object | None],
-    *,
-    append: bool | None = None,
 ) -> Any:
     """Read `config`, check its `section` and build the connector that `system` names.
 
@@ -156,7 +154,6 @@ def build_connector(
         config: Path of the JSON configuration file.
         section: `source` or `target`.
         arguments: The callback arguments, by name, `None` for the ones not given.
-        append: For `json_lines`, the `append` of the writer.
 
     Raises:
         TypeError: `config` is not a path.
@@ -219,8 +216,6 @@ def build_connector(
 
     parameters = {key: value for key, value in keys.items() if key != "system"}
     parameters.update(taken)
-    if append is not None and system.connector is JsonLinesWriter:
-        parameters["append"] = append
     try:
         return system.connector(**parameters)
     except Exception as exc:
