@@ -1143,10 +1143,10 @@ criterion says otherwise:
   A `ReadSource` given an instance of a subclass of `MongoDBConnection` builds.
 - **AT-030**: Given `{"target": {"system": "mongodb", "database": "shop", "collection": "orders"}}`,
   when `AppendOnly(path)` or `FullLoad(path)` is built, then it raises
-  `ValueError("<path>: target.system 'mongodb' is not one of: bigquery, disk, gcs, json_lines, postgres, s3, unity_catalog, volume")`.
+  `ValueError("<path>: target.system 'mongodb' is not one of: bigquery, disk, gcs, json_lines, mysql, postgres, s3, unity_catalog, volume")`.
   Given a `source` section whose `system` is `"MongoDB"` or `"mongo"`, when `ReadSource(path)` is
   built, then it raises
-  `ValueError("<path>: source.system '<name>' is not one of: bigquery, disk, gcs, json_api, mongodb, postgres, s3, unity_catalog, volume")`.
+  `ValueError("<path>: source.system '<name>' is not one of: bigquery, disk, gcs, json_api, mongodb, mysql, postgres, s3, unity_catalog, volume")`.
 - **AT-031**: Given the default section with the key on the left added, when
   `ReadSource(path, connection=conn)` is built, then it raises the `ValueError` that
   `MongoDBReader` raises, with the message on the right and exactly one note,
@@ -1420,3 +1420,4 @@ One entry per stage, recorded by the main session from the stage's report.
 | 2026-10-24 | documentation | documented | Documented `MongoDBConnection` and `MongoDBReader` on the connectors page, and the `mongodb` system and the new type check of `connection` on the configuration and callbacks pages. Amended ADRs 0012, 0013 and 0015, with `TODO(maintainer)` left open for the absence of a writer and for widening `connection`. Updated `docs/index.md` and the architecture kb entry. |
 | 2026-10-24 | implementation | implemented | Added `MongoDBConnection` and `MongoDBReader` in `connector/mongodb.py`, exported from `ingestio.connector.all`, and the `mongodb` source system of the closed table. `ReadSource` takes a `MongoDBConnection`, and `_build` checks the type of `connection` for every system that takes one (a `connection_type` field of `_System`). Suite: 1700 passed, 123 skipped (existing opt-in tests); ruff and mypy strict clean. |
 | 2026-10-24 | validation | validated | AT-001 to AT-033 pass in `tests/test_mongodb_reader.py` (155 cases, no opt-in criteria, no Spark run). The suite gives 1700 passed and 123 skipped (existing opt-in tests), the docs examples pass, and ruff, format, mypy strict and the lock check are clean. A static review of `read()`'s Spark calls finds one action, the bound query, and the `connection` type check breaks no existing test. Non-blocking notes: a duck-typed connection with a bad `uri` raises `StopIteration`, and a connection string with no `@` shows its whole authority in `repr`. |
+| 2026-10-24 | amendment | validated | AT-030 amended by the main session after the validation of [mysql_connectors](mysql_connectors.md), approved on 2026-10-24: `mysql` becomes a source and a target system there, so both messages of AT-030 list `mysql`. What the criterion checks is unchanged; `tests/test_mongodb_reader.py` already uses these lists, updated by the test-writer of `mysql_connectors`. The lists under Behaviour (Lists of systems) record the state when this spec landed. |

@@ -94,11 +94,13 @@ instance: only the connectors the library ships can be named. See
 All of them are essential: every error propagates out of the process unchanged.
 
 `connection` is the connection value of the system that needs one. `ReadSource` takes a
-`PostgresConnection` for a `postgres` source and a `MongoDBConnection` for a `mongodb` source: its
-annotation is `PostgresConnection | MongoDBConnection | None`. `AppendOnly`, `FullLoad` and `SCD2`
-keep `PostgresConnection`, because there is no MongoDB writer. Each callback checks the type of
-`connection` when it is built, and a connection of another system's class raises a `ValueError`
-that names the system and the class ([Configuration](configuration.md#errors)).
+`PostgresConnection` for a `postgres` source, a `MongoDBConnection` for a `mongodb` source and a
+`MySQLConnection` for a `mysql` source: its annotation is
+`PostgresConnection | MongoDBConnection | MySQLConnection | None`. `AppendOnly`, `FullLoad` and
+`SCD2` take a `PostgresConnection` or a `MySQLConnection`: their annotation is
+`PostgresConnection | MySQLConnection | None`, because there is no MongoDB writer. Each callback
+checks the type of `connection` when it is built, and a connection of another system's class raises
+a `ValueError` that names the system and the class ([Configuration](configuration.md#errors)).
 
 `SCD2` is described [below](#scd2). `AppendOnly` and `FullLoad` take the same arguments and subclass `Callback` directly, neither one a
 subclass of the other. Neither takes `replace`, `spark` or `watermark_value`. Each calls the writer
@@ -261,15 +263,17 @@ missing target included, propagates as the reader's own error, unchanged, and so
 
 ### Supported target systems
 
-`SCD2` supports `unity_catalog`, `postgres` and `bigquery`, the systems whose
+`SCD2` supports `unity_catalog`, `postgres`, `mysql` and `bigquery`, the systems whose
 `write(data, replace=True)` is atomic and stays correct when the DataFrame written reads the same
-target. Any other system raises when the callback is built, with the configuration's own message and
-the narrowed list: `<path>: target.system 'disk' is not one of: bigquery, postgres, unity_catalog`.
+target. Any other system raises when the callback is built, with the configuration's own message
+and the narrowed list:
+`<path>: target.system 'disk' is not one of: bigquery, mysql, postgres, unity_catalog`.
 
 | `system` | Reader of the target | Arguments | Write |
 |---|---|---|---|
 | `unity_catalog` | `UnityCatalogReader` | none | one Delta commit |
 | `postgres` | `PostgresReader` | `connection`, required | staging table, then one transaction |
+| `mysql` | `MySQLReader` | `connection`, required: a `MySQLConnection` | staging table, then one transaction that deletes every row and inserts the batch's |
 | `bigquery` | `BigQueryReader` | `client`, optional | staging table, then one `MERGE` |
 
 The reader is built when the process runs, from the `target` section's `table_name` (and
@@ -335,7 +339,8 @@ with tempfile.TemporaryDirectory() as tmp:
     try:
         SCD2(config)
     except ValueError as error:
-        print(error)  # ... target.system 'disk' is not one of: bigquery, postgres, unity_catalog
+        # ... target.system 'disk' is not one of: bigquery, mysql, postgres, unity_catalog
+        print(error)
 
     job["target"] = {"system": "unity_catalog", "table_name": "main.gold.dim_customer"}
     job["scd2"]["valid_to_column"] = "updated_at"
@@ -350,9 +355,11 @@ with tempfile.TemporaryDirectory() as tmp:
 
 - **Every run rewrites the whole dimension.** Its cost grows with the dimension, not with the
   batch. On `postgres`, `TRUNCATE` holds an exclusive lock on the dimension while the transaction
-  applies, and fails when a foreign key references it. On `bigquery`, the `MERGE` is billed over the
-  whole table. On `unity_catalog`, every run is a new version of the table that rewrites every file,
-  kept until `VACUUM`.
+  applies, and fails when a foreign key references it. On `mysql`, the transaction deletes every row
+  and inserts every row, which is slow on a large dimension, and the `DELETE` fires the dimension's
+  triggers and the `ON DELETE` actions of the foreign keys that reference it. On `bigquery`, the
+  `MERGE` is billed over the whole table. On `unity_catalog`, every run is a new version of the
+  table that rewrites every file, kept until `VACUUM`.
 - **The batch and the target are each evaluated twice,** once by the checks and once by the write.
   A batch that is a lazy read of a live source reads it twice; the guard fails the write when the
   second evaluation breaks a check.
@@ -370,9 +377,10 @@ with tempfile.TemporaryDirectory() as tmp:
   that the system generates on insert cannot be in the target.
 - **Schema changes are the job's.** A new column in the batch fails the run until the job adds it to
   the target with its own DDL.
-- **On `postgres`, a Spark task retry can duplicate rows** of the staging table, and so duplicate a
-  version. **On `bigquery`,** `require_partition_filter` breaks the full read and the replace, and
-  rows still in the streaming buffer break the replace.
+- **On `postgres` and `mysql`, a Spark task retry can duplicate rows** of the staging table, and so
+  duplicate a version (on `mysql`, a unique key of the target turns the duplicate into a failure).
+  **On `bigquery`,** `require_partition_filter` breaks the full read and the replace, and rows still
+  in the streaming buffer break the replace.
 - **On `unity_catalog`, that Spark lets a plan overwrite a Delta table it reads is unverified.**
   The Delta integration test would verify it, but it runs neither in the development environment
   nor in CI as planned, so the support rests on the code of `UnityCatalogWriter` and on the Delta

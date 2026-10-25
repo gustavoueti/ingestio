@@ -76,8 +76,9 @@ spec, a reason for it beyond the one above.
 - `UnityCatalogWriter` creates a missing table as a managed Delta table with the DataFrame's
   columns, and nothing else. A job that needs partitioning, liquid clustering, constraints, a
   location or properties creates the table first. It never creates a catalog or a schema.
-- `PostgresWriter` keeps failing on a missing target, and so does `BigQueryWriter`, which runs no
-  DDL on the target: the rule allows creating, it does not require it. A staging table that a
+- `PostgresWriter` keeps failing on a missing target, and so do `BigQueryWriter` and `MySQLWriter`
+  ([spec](../../specs/mysql_connectors.md), decision 7), which run no DDL on the target: the rule
+  allows creating, it does not require it. A staging table that a
   writer creates and drops within one call is not the target and is outside this rule.
 - A later writer follows the line: it may create a missing target only in the form its system
   derives entirely from the data. If it cannot do so without choosing a layout, a location, a
