@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.7.0 (2026-10-25)
+
+### Features
+
+- **connector**: Add MySQLReader and MySQLWriter
+  ([#17](https://github.com/gustavoueti/ingestio/pull/17),
+  [`6c68a42`](https://github.com/gustavoueti/ingestio/commit/6c68a42e3f563acdd066a0913dc2a54ddf968532))
+
+
 ## v0.6.0 (2026-10-24)
 
 ### Documentation
