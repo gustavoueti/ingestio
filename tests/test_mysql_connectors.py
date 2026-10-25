@@ -100,7 +100,9 @@ STAGING_NAME = re.compile(r"ingestio_staging_[0-9a-f]{32}")
 HEX_LITERAL = re.compile(r"X'[0-9a-f]*'")
 ANY_EXTRA_MARKER = re.compile(r"""\bextra\s*==\s*["'][^"']+["']""")
 SSL_MODES = ("DISABLED", "PREFERRED", "REQUIRED", "VERIFY_CA", "VERIFY_IDENTITY")
-SOURCE_NAMES = "bigquery, disk, gcs, json_api, mongodb, mysql, postgres, s3, unity_catalog, volume"
+SOURCE_NAMES = (
+    "bigquery, disk, gcs, json_api, mongodb, mysql, mysql_cdc, postgres, s3, unity_catalog, volume"
+)
 TARGET_NAMES = "bigquery, disk, gcs, json_lines, mysql, postgres, s3, unity_catalog, volume"
 SCD2_NAMES = "bigquery, mysql, postgres, unity_catalog"
 DEFAULT_SOURCE: dict[str, object] = {"system": "mysql", "table_name": "shop.orders"}
@@ -976,12 +978,16 @@ def test_at004_the_distribution_declares_the_mysql_extra_with_pymysql_and_rsa() 
         assert requirement.marker is not None, requirement
         assert ANY_EXTRA_MARKER.search(str(requirement.marker)), requirement
 
-    named = [item for item in requirements if canonicalize_name(item.name) == "pymysql"]
+    # The `mysql-cdc` extra of specs/mysql_cdc.md names PyMySQL too, under its own marker.
+    named = [
+        item
+        for item in requirements
+        if canonicalize_name(item.name) == "pymysql" and str(item.marker) == 'extra == "mysql"'
+    ]
     assert len(named) == 1, requirements
     (pymysql_requirement,) = named
     assert pymysql_requirement.extras == {"rsa"}
     assert str(pymysql_requirement.specifier) == ">=1.2.0"
-    assert str(pymysql_requirement.marker) == 'extra == "mysql"'
 
 
 # --- MySQLConnection ----------------------------------------------------------------------

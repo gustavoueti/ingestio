@@ -1,6 +1,6 @@
 # 0003. Define connectors as Reader and Writer protocols
 
-- **Status:** accepted
+- **Status:** accepted, amended by [0015](0015-choose-connectors-from-the-job-configuration.md)
 - **Recorded:** 2026-10-22
 - **Evidence:** `src/ingestio/connector/core.py`, `src/ingestio/callback/core.py`; listed by
   the maintainer in the [philosophy](../philosophy.md#connector). Amended on 2026-10-23 by

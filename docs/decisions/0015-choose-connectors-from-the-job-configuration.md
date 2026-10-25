@@ -16,7 +16,9 @@
   [specs/mongodb_reader.md](../../specs/mongodb_reader.md), which adds the `mongodb` system and
   widens the `connection` argument per system. It is amended on 2026-10-24 by
   [specs/mysql_connectors.md](../../specs/mysql_connectors.md), which adds the `mysql` system, a
-  source and a target, and widens `connection` to `MySQLConnection`.
+  source and a target, and widens `connection` to `MySQLConnection`. It is amended on 2026-10-24 by
+  [specs/mysql_cdc.md](../../specs/mysql_cdc.md), which adds the `mysql_cdc` system, a source only,
+  and `binlog_position`, a per-run argument of `ReadSource`.
 
 ## Context
 
@@ -42,14 +44,18 @@
   class name in snake case without `Reader` or `Writer`: `json_api`, `json_lines`, `disk`,
   `postgres`, `s3`, `gcs`, `volume`, `unity_catalog`, `bigquery`, `mongodb` (a source only, added
   by [specs/mongodb_reader.md](../../specs/mongodb_reader.md)) and `mysql` (a source and a target,
-  added by [specs/mysql_connectors.md](../../specs/mysql_connectors.md)). The other keys of a
+  added by [specs/mysql_connectors.md](../../specs/mysql_connectors.md)) and `mysql_cdc` (a source
+  only, added by [specs/mysql_cdc.md](../../specs/mysql_cdc.md)). The other keys of a
   section are the connector's constructor arguments of the same name. (Amended by
   [ADR 0017](0017-read-a-library-callbacks-own-parameters-from-a-section-named-after-it.md): a
   third section, `scd2`, holds the parameters of `SCD2`, which only that callback reads. The top
   level stays the job's except for the names `source`, `target` and `scd2`.)
 - **What does not belong in the JSON** reaches the callback as arguments: credentials, such as
   a `PostgresConnection` the job builds from its own secrets, SDK clients (`client=`), and
-  per-run values such as `watermark_value`. The library still never reads secrets.
+  per-run values such as `watermark_value` and, since the amendment of 2026-10-24
+  ([specs/mysql_cdc.md](../../specs/mysql_cdc.md), decision 3), `binlog_position`, the binary log
+  position a `mysql_cdc` source starts from, an argument of `ReadSource`. The library still never
+  reads secrets.
 - **The closed table is the one registry the library has.** The mapping from system names to the
   connectors the library ships is private to the library, holds only shipped connectors, and
   nothing outside the library can add to it: no mapping argument, no import path in the
@@ -125,6 +131,14 @@ the library or a feature request, not through the job's code.
   argument widens rather than a new argument being added: `TODO(maintainer)`. The technical reason
   the maintainer gave for the value itself: the job reads the connection string from a secret store
   at run time and hands it to the connector, so it never sits in the configuration.
+- **`ReadSource` gains `binlog_position`** (amendment of 2026-10-24,
+  [spec](../../specs/mysql_cdc.md), decisions 3, 28 and 29): a keyword-only argument after
+  `watermark_value`, a `tuple[str, int]` that the connector validates, taken by `mysql_cdc` alone.
+  Any other system given it raises `takes no argument binlog_position`. The reason is this ADR's
+  rule applied to one more value: per-run values are callback arguments, and the job keeps the
+  position as it keeps the watermark. `AppendOnly`, `FullLoad` and `SCD2` do not change. The
+  `mysql_cdc` source takes a `MySQLConnection` as `connection`, and `server_id`, an integer, is a
+  key of its section, because it is neither a secret nor a per-run value (decision 31).
 - **The callbacks check the type of `connection`** when they are built, for every system that
   takes one, in `ReadSource`, `AppendOnly`, `FullLoad` and `SCD2`. A connection of another
   system's class raises a `ValueError` with the file's path and the system in the message, before

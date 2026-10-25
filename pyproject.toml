@@ -28,6 +28,7 @@ databricks = ["databricks-sdk>=0.20"]
 gcs = ["google-cloud-storage>=2.10"]
 s3 = ["boto3>=1.34"]
 mysql = ["PyMySQL[rsa]>=1.2.0"]
+mysql-cdc = ["PyMySQL[rsa]>=1.2.0", "mysql-replication>=1.0.16"]
 
 [project.urls]
 Repository = "https://github.com/gustavoueti/ingestio"
@@ -52,6 +53,7 @@ dev = [
     "google-cloud-storage>=2.10",
     "PyMySQL[rsa]>=1.2.0",
     "types-PyMySQL>=1.2",
+    "mysql-replication>=1.0.16",
 ]
 
 [build-system]
@@ -120,6 +122,11 @@ strict = true
 # google-cloud-storage ships no py.typed marker and has no stubs package.
 [[tool.mypy.overrides]]
 module = ["google.cloud.storage", "google.cloud.storage.*"]
+ignore_missing_imports = true
+
+# python-mysql-replication ships no py.typed marker and has no stubs package.
+[[tool.mypy.overrides]]
+module = ["pymysqlreplication", "pymysqlreplication.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------

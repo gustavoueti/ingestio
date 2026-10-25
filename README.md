@@ -56,6 +56,7 @@ is a change to the library, and this table grows with it.
 | [BigQuery](docs/concepts/connectors.md#bigquery-bigqueryreader-bigquerywriter) | `bigquery` | `BigQueryReader` | `BigQueryWriter` | yes | `bigquery`, for the writer, and for a reader with `watermark_column` |
 | [MongoDB](docs/concepts/connectors.md#mongodb-mongodbconnection-mongodbreader) | `mongodb` | `MongoDBReader` | — | yes | — |
 | [MySQL](docs/concepts/connectors.md#mysql-mysqlconnection-mysqlreader-mysqlwriter) | `mysql` | `MySQLReader` | `MySQLWriter` | yes | `mysql`, for the writer |
+| [MySQL CDC](docs/concepts/connectors.md#mysql-cdc-mysqlcdcreader) | `mysql_cdc` | `MySQLCDCReader` | — | yes | `mysql-cdc` |
 
 - **Spark:** the connector reads into a Spark DataFrame and writes from one. It expects a Spark
   session to be running already, and never starts one: Databricks provides it; elsewhere, create
@@ -360,7 +361,8 @@ The whole behaviour, the checks and the errors are in
 
 ## Roadmap
 
-More connectors (MySQL change data capture, a MongoDB writer and change streams).
+More connectors (a MongoDB writer and change streams), and a callback that applies the change
+events of `mysql_cdc` to a target.
 
 ## License
 

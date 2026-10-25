@@ -54,7 +54,8 @@ These questions apply to both:
 
 1. [specs/mysql_connectors.md](../specs/mysql_connectors.md): `MySQLConnection`, the reader and
    the writer on Spark JDBC, and the extra. Validated on 2026-10-24.
-2. `specs/mysql_cdc.md`: the CDC reader. It is planned next, and it reuses `MySQLConnection`.
+2. [specs/mysql_cdc.md](../specs/mysql_cdc.md): `MySQLCDCReader`, the `mysql_cdc` system and
+   the `mysql-cdc` extra. Validated on 2026-10-24.
 3. The callback that applies the change events to a target, with a spec of its own, after the
    CDC reader.
 
@@ -85,35 +86,9 @@ unconfirmed. The maintainer left them for later on 2026-10-24.
   position from the DataFrame, as it takes the next watermark. A table with no changes does not
   move the position forward, and the server can purge it.
 
-**What the source of `python-mysql-replication` shows** (PyPI `mysql-replication`,
-Apache-2.0, read at tag 1.0.17):
-
-- It requires `pymysql>=1.1.0` (`setup.py`), MySQL 8.0.14 or later with `binlog_row_metadata`
-  and `binlog_row_image` set to `FULL` (`README.md`), and Python 3.10 to 3.14.
-- `BinLogStreamReader(blocking=False)` asks the server for `BINLOG_DUMP_NON_BLOCK`: the server
-  sends an EOF at the end of the binary log, and `fetchone()` returns `None`
-  (`binlogstream.py`).
-- Resuming from `log_file` and `log_pos` needs `resume_stream=True`, otherwise the stream starts
-  at position 4 of the file. `auto_position` takes a GTID set instead.
-- `end_log_pos` compares the position only, not the file, so a bound that spans a rotation needs
-  a check of the reader's own.
-- `only_tables` matches the table name and `only_schemas` the database, each on its own.
-- `SHOW BINARY LOG STATUS`, the only form MySQL 8.4 accepts, is used from 1.0.16 on. Earlier
-  releases run `SHOW MASTER STATUS`.
-
-**Open questions**, for the CDC reader:
-
-- Is the position a binlog file and offset, or a GTID set? A GTID set survives a failover to a
-  replica, and a file and offset do not need `gtid_mode=ON`.
-- What does the first run do, when the job has no position yet? For instance, the job captures
-  the current position, takes a full load with the `mysql` reader, and starts the CDC reader
-  from that position. The changes made during the load would then be read twice, which an apply
-  that upserts and deletes by key tolerates.
-- What happens when the server has already purged the position?
-- What does an event look like: the table's columns plus the operation, the position and the
-  commit time? Does an update carry its row before the change? Does the Spark schema come from
-  the table through JDBC, so that it matches the `mysql` reader's?
-- Does one reader read one table, as the `mysql` reader does?
+The CDC reader's design, the facts read in the source of `python-mysql-replication` and the
+answers to its open questions (file and offset, a snapshot on the first run, an error on a
+purged position, flat columns plus metadata) are in [its spec](../specs/mysql_cdc.md).
 
 **Open questions**, for the callback that applies the events:
 

@@ -16,7 +16,7 @@
   [specs/append_only_callback.md](append_only_callback.md),
   [specs/scd2_callback.md](scd2_callback.md),
   [backlog idea 8](../docs/backlog.md#8-mysql-reader-and-writer-with-cdc),
-  the later spec `specs/mysql_cdc.md` (not written yet),
+  [specs/mysql_cdc.md](mysql_cdc.md), the CDC reader,
   [Connectors](../docs/concepts/connectors.md),
   [Configuration](../docs/concepts/configuration.md),
   [Callbacks](../docs/concepts/callbacks.md)
@@ -878,8 +878,8 @@ The `mysql` system (decision 26) is two more rows of the closed table:
   and `ssl_mode` are never keys: like any key the system does not take, they raise
   `<path>: <section>.<key> is not a key of system 'mysql'`.
 - **Lists of systems.** `<names>` for a source becomes
-  `bigquery, disk, gcs, json_api, mongodb, mysql, postgres, s3, unity_catalog, volume`, and for a
-  target `bigquery, disk, gcs, json_lines, mysql, postgres, s3, unity_catalog, volume`.
+  `bigquery, disk, gcs, json_api, mongodb, mysql, mysql_cdc, postgres, s3, unity_catalog, volume`,
+  and for a target `bigquery, disk, gcs, json_lines, mysql, postgres, s3, unity_catalog, volume`.
 - **`connection`.** The callback hands the very object to the connector. When it is missing, the
   build raises `<path>: <section> system 'mysql' needs the argument connection`.
 - **The type of `connection`** ([specs/mongodb_reader.md](mongodb_reader.md), decision 10). The
@@ -1503,7 +1503,7 @@ unless a criterion says otherwise.
   A `ReadSource` and an `AppendOnly` given an instance of a subclass of `MySQLConnection` build.
 - **AT-045**: Given a `source` whose `system` is `"MySQL"`, when `ReadSource(path)` is built, then
   it raises
-  `ValueError("<path>: source.system 'MySQL' is not one of: bigquery, disk, gcs, json_api, mongodb, mysql, postgres, s3, unity_catalog, volume")`.
+  `ValueError("<path>: source.system 'MySQL' is not one of: bigquery, disk, gcs, json_api, mongodb, mysql, mysql_cdc, postgres, s3, unity_catalog, volume")`.
   Given a `target` whose `system` is `"mariadb"`, when `AppendOnly(path)` is built, then it raises
   `ValueError("<path>: target.system 'mariadb' is not one of: bigquery, disk, gcs, json_lines, mysql, postgres, s3, unity_catalog, volume")`.
 - **AT-046**: Given the section on the left, when the callback of its section is built with
@@ -1858,3 +1858,5 @@ One entry per stage, recorded by the main session from the stage's report.
 | 2026-10-24 | documentation | documented | After the return, the doc-keeper fixed the nested-backtick span of the watermark-read bullet in `docs/concepts/connectors.md` (now ``` `` WHERE `col` > <value> `` ```) and re-wrapped at 100 columns the prose lines it had inserted in `connectors.md`, `callbacks.md`, `configuration.md` and ADR 0015; the comment of `SCD2`'s example in `callbacks.md` now carries the full message on its own line. No wording changed. Checked by the main session: 30 documentation examples pass, and no added prose line runs past 100 columns. |
 | 2026-10-24 | implementation | implemented | After the return, the implementer removed the unused `begin` keyword, and its branch, from the writer's local helper in `mysql.py`; the apply keeps its own `begin()` on its one connection. Nothing else changed. Checked by the main session: 1910 passed, 140 skipped, ruff, format, mypy strict and `uv lock --check` clean. |
 | 2026-10-24 | validation | validated | The acceptance-validator passed all seven checks again after the return: AT-001 to AT-050 in 208 passing cases, the full suite 1910 passed and 140 opt-in skips, all 30 documentation examples, ruff, format, mypy strict and `uv lock --check` clean. The five non-blocking notes are settled (the `begin` keyword removed, the code span fixed, the inserted lines re-wrapped, AT-030 of `mongodb_reader` amended, the backlog updated) and nothing else changed. The 17 integration cases of decision 43 remain not run: no MySQL server and no JVM here. |
+| 2026-10-24 | amendment | validated | Amended by the main session, as [mysql_cdc](mysql_cdc.md) (What becomes outdated) asks, approved on 2026-10-24: `mysql_cdc` becomes a source system there, so the list of source systems in AT-045 and under In a configuration gains `mysql_cdc`. What the criterion checks is unchanged; the test-writer of `mysql_cdc` updates `SOURCE_NAMES` in `tests/test_mysql_connectors.py`. The Related line now links the CDC spec. |
+| 2026-10-24 | test change | validated | Recorded by the main session: the test-writer of [mysql_cdc](mysql_cdc.md) changed `test_at004_...` in `tests/test_mysql_connectors.py` to look for the `PyMySQL` requirement whose marker is `extra == "mysql"`, as AT-004 reads, instead of requiring a single `PyMySQL` requirement in the whole metadata, which the `mysql-cdc` extra broke. The criterion is unchanged. |
