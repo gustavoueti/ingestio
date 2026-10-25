@@ -19,9 +19,9 @@ How the library works and how it is used.
 
 | Page | Covers |
 |---|---|
-| [concepts/connectors.md](concepts/connectors.md) | `Reader` and `Writer`, using a connector, `JsonApiReader`, `JsonLinesWriter`, the PostgreSQL connectors, `DiskReader`, `DiskWriter`, `S3Reader`, `S3Writer`, `GcsReader`, `GcsWriter`, `VolumeReader`, `VolumeWriter`, `UnityCatalogReader`, `UnityCatalogWriter`, `BigQueryReader`, `BigQueryWriter`, `MongoDBConnection`, `MongoDBReader` (schema hints, collection names, the path of the connection string), extras. |
+| [concepts/connectors.md](concepts/connectors.md) | `Reader` and `Writer`, using a connector, `JsonApiReader`, `JsonLinesWriter`, the PostgreSQL connectors, `DiskReader`, `DiskWriter`, `S3Reader`, `S3Writer`, `GcsReader`, `GcsWriter`, `VolumeReader`, `VolumeWriter`, `UnityCatalogReader`, `UnityCatalogWriter`, `BigQueryReader`, `BigQueryWriter`, `MongoDBConnection`, `MongoDBReader` (schema hints, collection names, the path of the connection string), `MySQLConnection`, `MySQLReader`, `MySQLWriter` (literals, time zones, the atomic write), extras. |
 | [concepts/configuration.md](concepts/configuration.md) | The job's JSON configuration file: the `source` and `target` sections, the `system` names, the keys of each system, the callback arguments (`connection` per system, with its type check), append and replace (the callback chooses), the `scd2` section, errors. |
-| [concepts/callbacks.md](concepts/callbacks.md) | `Callback`, sharing data through the state, `ReadSource`, `AppendOnly`, `FullLoad` and `SCD2` (they build their connector from the configuration), the SCD2 checks, target systems and limitations, cancellation. |
+| [concepts/callbacks.md](concepts/callbacks.md) | `Callback`, sharing data through the state, `ReadSource`, `AppendOnly`, `FullLoad` and `SCD2` (they build their connector from the configuration), the SCD2 checks, target systems (`unity_catalog`, `postgres`, `mysql`, `bigquery`) and limitations, cancellation. |
 | [concepts/criticality.md](concepts/criticality.md) | Essential and non-essential callbacks. Not implemented yet. |
 | [concepts/lifecycle.md](concepts/lifecycle.md) | Building and running a process, the three passes of a step, failure, logging. |
 
@@ -68,6 +68,7 @@ One spec per change to `src/`, in [`specs/`](../specs/), written from
 | [unity_catalog_connectors.md](../specs/unity_catalog_connectors.md) | The Unity Catalog reader and writer: Delta tables by their three-part name, a watermark filter in the table's scan, a table created when missing. |
 | [bigquery_connectors.md](../specs/bigquery_connectors.md) | The BigQuery reader and writer: a watermark filter in the Storage Read API with a frozen bound, an atomic write through a staging table, and the `ingestio[bigquery]` extra. |
 | [mongodb_reader.md](../specs/mongodb_reader.md) | The MongoDB reader: `MongoDBConnection` and `MongoDBReader` over the MongoDB Spark Connector, schema hints, a watermark filter pushed as a `$match` with a frozen bound, the `mongodb` source system, no writer and no extra. |
+| [mysql_connectors.md](../specs/mysql_connectors.md) | The MySQL reader and writer: `MySQLConnection`, `MySQLReader` and `MySQLWriter` over Spark's JDBC source with Connector/J, a watermark filter with a frozen bound and literals that hold in every `sql_mode`, an atomic write through a staging table and one PyMySQL transaction, the `mysql` source and target system, `mysql` as an `SCD2` target, and the `ingestio[mysql]` extra. |
 | [config_connectors.md](../specs/config_connectors.md) | `ReadSource` and the write callback (since replaced by `AppendOnly` and `FullLoad`) choose the reader and the writer from the job's JSON configuration, through a closed table of the shipped connectors. |
 
 ## Agent tooling

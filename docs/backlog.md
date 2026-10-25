@@ -50,39 +50,76 @@ These questions apply to both:
 
 **Idea.** A connector for MySQL, with an implementation for change data capture (CDC).
 
-**Open questions.**
+**Specs.** The work is split in three, one after the other:
 
-- Does MySQL get a reader and a writer like the PostgreSQL ones, built on Spark JDBC with a
-  client on the driver for the transaction, and a separate CDC reader on top of them? Each would
-  be one more system of the table, such as `mysql`, and a CDC reader another one.
-- How is the writer atomic? `PostgresWriter` loads a staging table and applies it to the
-  target in one transaction. In MySQL, DDL such as `CREATE TABLE`, `DROP TABLE` and `TRUNCATE`
-  commits the open transaction implicitly, so that recipe does not carry over as it is.
-  `FullLoad`'s `write(data, replace=True)` would need a `DELETE` inside the transaction, or an
-  atomic `RENAME TABLE` swap.
-- Which CDC mechanism?
-  - Log-based: read the binary log on the driver (python-mysql-replication) from a position up
-    to the current one, and return each insert, update and delete with the row before and
-    after it. It captures deletes, but needs `binlog_format=ROW`, `binlog_row_image=FULL` and
-    replication privileges.
-  - Query-based: a watermark column, as `PostgresReader` uses. Nothing new is needed, but
-    deletes are missed.
-  - External: Debezium captures the changes into Kafka or files, and ingestio reads them from
-    there.
-- If log-based, who keeps the binlog position? Under ADR 0015 a per-run value reaches
-  `ReadSource` as an argument, as `watermark_value` does, so the job would pass the position and
-  store the next one, and `ReadSource` would get one more argument. ADR 0012 says a CDC source
-  for PostgreSQL "would be a different connector that tracks its own offsets". Which rule
-  applies? What happens when the server has already purged the position? How does the first run
-  work: a full snapshot taken at a consistent binlog position?
-- Who applies the changes? The philosophy lists CDC replication as a callback, and ADR 0016
-  makes each write strategy one callback. Does the connector only return the change events, with
-  a separate callback and spec applying them to the target? No shipped writer updates or deletes
-  rows today, so that callback either needs a capability that the shipped writers lack, or
-  rewrites the whole target with `write(data, replace=True)`, as `SCD2` does
-  ([spec](../specs/scd2_callback.md), decision 1).
-- Which client package: PyMySQL or mysql-connector-python? MySQL Connector/J is a prerequisite
-  for Spark, as the PostgreSQL JDBC driver is.
+1. [specs/mysql_connectors.md](../specs/mysql_connectors.md): `MySQLConnection`, the reader and
+   the writer on Spark JDBC, and the extra. Validated on 2026-10-24.
+2. `specs/mysql_cdc.md`: the CDC reader. It is planned next, and it reuses `MySQLConnection`.
+3. The callback that applies the change events to a target, with a spec of its own, after the
+   CDC reader.
+
+**Postponed: the integration tests in CI.** The 17 opt-in cases of the first spec (its decision
+43) need a MySQL 8.4 service in `.github/workflows/ci.yml`, the variables `INGESTIO_MYSQL_URL` and
+`INGESTIO_MYSQL_JDBC_PACKAGE`, and a user with `SYSTEM_VARIABLES_ADMIN` for the cases that set
+the global `sql_mode` or `time_zone`. Until they run, the facts K1 to K16 of that spec stay
+unconfirmed. The maintainer left them for later on 2026-10-24.
+
+**Decided by the maintainer on 2026-10-24.**
+
+- **Connectors only talk to MySQL.** The CDC reader returns the change events and nothing
+  else, and applying them is a callback: the philosophy lists CDC replication as a callback, and
+  ADR 0016 makes each write strategy one callback.
+- **The writer is atomic through a staging table and a `DELETE`.** Spark loads a staging table,
+  then one transaction on the driver runs `DELETE FROM <target>` when `replace=True` and
+  `INSERT … SELECT` from the staging table. In MySQL `CREATE`, `DROP`, `TRUNCATE` and `RENAME
+  TABLE` commit the open transaction implicitly, so the `TRUNCATE` of `PostgresWriter` cannot run
+  inside it. A `DELETE` keeps the target's grants, triggers and incoming foreign keys, which a
+  `RENAME TABLE` swap loses. Its cost is a slow `DELETE` and a large undo log on big tables.
+- **CDC reads the binary log on the driver, with `python-mysql-replication`.** It captures
+  deletes, which a watermark misses. It needs `binlog_format=ROW`, `binlog_row_image=FULL`,
+  `binlog_row_metadata=FULL` and the replication privileges, and the events pass through the
+  driver's memory before they become a DataFrame.
+- **Each event carries its binlog position.** The job passes the start position as an argument
+  of `ReadSource`, as it passes `watermark_value`. The reader reads up to the end of the binary
+  log captured when it reads, since building a connector only validates. The job takes the next
+  position from the DataFrame, as it takes the next watermark. A table with no changes does not
+  move the position forward, and the server can purge it.
+
+**What the source of `python-mysql-replication` shows** (PyPI `mysql-replication`,
+Apache-2.0, read at tag 1.0.17):
+
+- It requires `pymysql>=1.1.0` (`setup.py`), MySQL 8.0.14 or later with `binlog_row_metadata`
+  and `binlog_row_image` set to `FULL` (`README.md`), and Python 3.10 to 3.14.
+- `BinLogStreamReader(blocking=False)` asks the server for `BINLOG_DUMP_NON_BLOCK`: the server
+  sends an EOF at the end of the binary log, and `fetchone()` returns `None`
+  (`binlogstream.py`).
+- Resuming from `log_file` and `log_pos` needs `resume_stream=True`, otherwise the stream starts
+  at position 4 of the file. `auto_position` takes a GTID set instead.
+- `end_log_pos` compares the position only, not the file, so a bound that spans a rotation needs
+  a check of the reader's own.
+- `only_tables` matches the table name and `only_schemas` the database, each on its own.
+- `SHOW BINARY LOG STATUS`, the only form MySQL 8.4 accepts, is used from 1.0.16 on. Earlier
+  releases run `SHOW MASTER STATUS`.
+
+**Open questions**, for the CDC reader:
+
+- Is the position a binlog file and offset, or a GTID set? A GTID set survives a failover to a
+  replica, and a file and offset do not need `gtid_mode=ON`.
+- What does the first run do, when the job has no position yet? For instance, the job captures
+  the current position, takes a full load with the `mysql` reader, and starts the CDC reader
+  from that position. The changes made during the load would then be read twice, which an apply
+  that upserts and deletes by key tolerates.
+- What happens when the server has already purged the position?
+- What does an event look like: the table's columns plus the operation, the position and the
+  commit time? Does an update carry its row before the change? Does the Spark schema come from
+  the table through JDBC, so that it matches the `mysql` reader's?
+- Does one reader read one table, as the `mysql` reader does?
+
+**Open questions**, for the callback that applies the events:
+
+- No shipped writer updates or deletes rows. Does the callback rewrite the whole target with
+  `write(data, replace=True)`, as `SCD2` does ([spec](../specs/scd2_callback.md), decision 1),
+  or does a writer gain a capability for it?
 
 ## 9. MongoDB reader and writer
 

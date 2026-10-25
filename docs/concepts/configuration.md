@@ -85,7 +85,8 @@ name. The library still reads no secret.
 
 - `connection`: the connection value of each system that takes one, required by it: a
   [`PostgresConnection`](connectors.md#postgresconnection) for `postgres`, and a
-  [`MongoDBConnection`](connectors.md#mongodbconnection) for `mongodb`. The callback checks its
+  [`MongoDBConnection`](connectors.md#mongodbconnection) for `mongodb`, and a
+  [`MySQLConnection`](connectors.md#mysqlconnection) for `mysql`. The callback checks its
   type when it is built, see [Errors](#errors).
 - `client`: the SDK client of the system, for the systems that take one.
 - `watermark_value`: the last watermark already ingested. `ReadSource` only.
@@ -98,6 +99,7 @@ name. The library still reads no secret.
 | `disk` | source | no | no | optional | optional |
 | `postgres` | source | **required**: a `PostgresConnection` | no | optional | optional |
 | `mongodb` | source | **required**: a `MongoDBConnection` | no | optional | optional |
+| `mysql` | source | **required**: a `MySQLConnection` | no | optional | optional |
 | `s3` | source | no | optional: a boto3 S3 client | optional | optional |
 | `gcs` | source | no | optional: a `google.cloud.storage.Client` | optional | optional |
 | `volume` | source | no | optional: a `databricks.sdk.WorkspaceClient` | optional | optional |
@@ -106,6 +108,7 @@ name. The library still reads no secret.
 | `json_lines` | target | no | no | – | – |
 | `disk`, `s3`, `gcs`, `volume`, `unity_catalog` | target | no | no | – | – |
 | `postgres` | target | **required**: a `PostgresConnection` | no | – | – |
+| `mysql` | target | **required**: a `MySQLConnection` | no | – | – |
 | `bigquery` | target | no | optional: a `google.cloud.bigquery.Client` | – | – |
 
 - An argument that is `None` is not given, for every system. A job that passes
@@ -130,6 +133,7 @@ can add to it or replace an entry, and it is not exported. A new system is a cha
 | `disk` | `DiskReader` | `DiskWriter` | none |
 | `postgres` | `PostgresReader` | `PostgresWriter` | `postgres`, for the writer |
 | `mongodb` | `MongoDBReader` | not a target | none |
+| `mysql` | `MySQLReader` | `MySQLWriter` | `mysql`, for the writer |
 | `s3` | `S3Reader` | `S3Writer` | `s3`, for a reader without `client` |
 | `gcs` | `GcsReader` | `GcsWriter` | `gcs`, for a reader without `client` |
 | `volume` | `VolumeReader` | `VolumeWriter` | `databricks`, for a reader without `client` |
@@ -147,6 +151,8 @@ The keys of a section, besides `system`:
 | `postgres` | source | `table_name` | `watermark_column`, `options` |
 | `postgres` | target | `table_name` | `options` |
 | `mongodb` | source | `database`, `collection` | `watermark_column`, `schema_hints`, `options` |
+| `mysql` | source | `table_name` | `watermark_column`, `options` |
+| `mysql` | target | `table_name` | `options` |
 | `s3` | source | `path`, `format` | `watermark_pattern`, `schema`, `options` |
 | `s3` | target | `path`, `format` | `options` |
 | `gcs` | source | `path`, `format` | `watermark_pattern`, `schema`, `options` |
@@ -177,7 +183,11 @@ The keys of a section, besides `system`:
 - The configuration has no mode: whether a write appends, replaces or keeps a history is the choice
   of the callback the job places, `AppendOnly`, `FullLoad` or `SCD2`. The `scd2` section chooses no
   write strategy.
-- `SCD2` supports only the `unity_catalog`, `postgres` and `bigquery` targets; see [Callbacks](callbacks.md#supported-target-systems).
+- `mysql` takes `table_name` as `table` or `database.table`; the host, the database of the
+  connection, the credentials, the port and `ssl_mode` are never keys, they are the
+  `MySQLConnection`. See [MySQL](connectors.md#mysql-mysqlconnection-mysqlreader-mysqlwriter).
+- `SCD2` supports only the `unity_catalog`, `postgres`, `mysql` and `bigquery` targets; see
+  [Callbacks](callbacks.md#supported-target-systems).
 
 ### JSON types
 
@@ -266,11 +276,11 @@ Changing the key columns or the tracked columns is an edit of the JSON. One dime
 | a required key is missing | `<path>: <section>.<key> is required for system '<system>'` |
 | a value has the wrong JSON type, or is `null` | `<path>: <section>.<key> must be ...`, as in [JSON types](#json-types) |
 | a callback argument that the system does not take is given | `<path>: <section> system '<system>' takes no argument <name>` |
-| `connection` is missing for `postgres` or `mongodb` | `<path>: <section> system '<system>' needs the argument connection` |
-| `connection` is not an instance of the system's connection class (`PostgresConnection` for `postgres`, `MongoDBConnection` for `mongodb`); a subclass is accepted | `<path>: <section> system '<system>' needs a <class> as the argument connection, not <type name>` |
+| `connection` is missing for `postgres`, `mongodb` or `mysql` | `<path>: <section> system '<system>' needs the argument connection` |
+| `connection` is not an instance of the system's connection class (`PostgresConnection` for `postgres`, `MongoDBConnection` for `mongodb`, `MySQLConnection` for `mysql`); a subclass is accepted | `<path>: <section> system '<system>' needs a <class> as the argument connection, not <type name>` |
 | the connector rejects a value, such as `table_name: "orders"` for `unity_catalog` | the connector's `ValueError`, the same object, with one note |
 | the system's extra is not installed | the connector's `ImportError`, the same object, with one note |
-| `SCD2` only: `target.system` is not `bigquery`, `postgres` or `unity_catalog` | `<path>: target.system '<name>' is not one of: bigquery, postgres, unity_catalog` |
+| `SCD2` only: `target.system` is not `bigquery`, `mysql`, `postgres` or `unity_catalog` | `<path>: target.system '<name>' is not one of: bigquery, mysql, postgres, unity_catalog` |
 | `SCD2` only: the `scd2` section is missing | `<path>: missing section 'scd2'` |
 | `SCD2` only: it is not an object | `<path>: section 'scd2' must be a JSON object` |
 | `SCD2` only: a key not in the table | `<path>: scd2.<key> is not a key of section 'scd2'` |
@@ -284,9 +294,10 @@ Changing the key columns or the tracked columns is an edit of the JSON. One dime
 | `state[key]` is missing | `KeyError`, whose `args` are `(key,)`, when the process runs; the writer is not called |
 
 - `<names>` are the names valid for the section, sorted and separated by `, `: for a source
-  `bigquery, disk, gcs, json_api, mongodb, postgres, s3, unity_catalog, volume`, for a target
-  `bigquery, disk, gcs, json_lines, postgres, s3, unity_catalog, volume`.
-- `<class>` is `MongoDBConnection` for `mongodb` and `PostgresConnection` for `postgres`, and
+  `bigquery, disk, gcs, json_api, mongodb, mysql, postgres, s3, unity_catalog, volume`, for a target
+  `bigquery, disk, gcs, json_lines, mysql, postgres, s3, unity_catalog, volume`.
+- `<class>` is `MongoDBConnection` for `mongodb`, `MySQLConnection` for `mysql` and
+  `PostgresConnection` for `postgres`, and
   `<type name>` is `type(connection).__name__`. So a `MongoDBConnection` given to a `postgres`
   source raises `<path>: source system 'postgres' needs a PostgresConnection as the argument
   connection, not MongoDBConnection`. `ReadSource`, `AppendOnly`, `FullLoad` and `SCD2` all make
@@ -316,8 +327,9 @@ extra is not installed raises, when the callback is built, the `ImportError` tha
 raises, which names the extra: `PostgresWriter needs psycopg: pip install 'ingestio[postgres]'`.
 It follows the connector's rule of needing the package only when it would import it: an `s3`, `gcs`
 or `volume` source given a `client` needs no extra, and a `bigquery` source without
-`watermark_column` needs none either, and neither does a `mongodb` source. So changing a job's system is an edit of its JSON and, when
-the new system needs an extra, of its install.
+`watermark_column` needs none either, and neither does a `mongodb` or a `mysql` source. A `mysql`
+target needs the `mysql` extra. So changing a job's system is an edit of its JSON and, when the new
+system needs an extra, of its install.
 
 ## Example
 
@@ -361,7 +373,7 @@ with tempfile.TemporaryDirectory() as tmp:
     print(out.read_text(encoding="utf-8"))
 
     # A mistake in the file stops the job when the callback is built.
-    config.write_text(json.dumps({"target": {"system": "mysql"}}), encoding="utf-8")
+    config.write_text(json.dumps({"target": {"system": "mariadb"}}), encoding="utf-8")
     try:
         AppendOnly(config)
     except ValueError as error:

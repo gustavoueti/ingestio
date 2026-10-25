@@ -57,8 +57,8 @@ DEFAULT_SOURCE: dict[str, object] = {
 }
 POSTGRES_SECTION: dict[str, object] = {"system": "postgres", "table_name": "public.orders"}
 SCD2_SECTION: dict[str, object] = {"key_columns": ["id"], "effective_time_column": "updated_at"}
-SOURCE_NAMES = "bigquery, disk, gcs, json_api, mongodb, postgres, s3, unity_catalog, volume"
-TARGET_NAMES = "bigquery, disk, gcs, json_lines, postgres, s3, unity_catalog, volume"
+SOURCE_NAMES = "bigquery, disk, gcs, json_api, mongodb, mysql, postgres, s3, unity_catalog, volume"
+TARGET_NAMES = "bigquery, disk, gcs, json_lines, mysql, postgres, s3, unity_catalog, volume"
 
 SCHEME = "uri must start with 'mongodb://' or 'mongodb+srv://'"
 AT_AFTER_HOSTS = "uri has an unencoded '@' after its hosts"

@@ -14,7 +14,9 @@
   [ADR 0017](0017-read-a-library-callbacks-own-parameters-from-a-section-named-after-it.md), which
   adds the `scd2` section to the shape of the file. It is amended on 2026-10-24 by
   [specs/mongodb_reader.md](../../specs/mongodb_reader.md), which adds the `mongodb` system and
-  widens the `connection` argument per system.
+  widens the `connection` argument per system. It is amended on 2026-10-24 by
+  [specs/mysql_connectors.md](../../specs/mysql_connectors.md), which adds the `mysql` system, a
+  source and a target, and widens `connection` to `MySQLConnection`.
 
 ## Context
 
@@ -39,8 +41,9 @@
   each write callback, each naming its system with the key `system`. The names are the connector's
   class name in snake case without `Reader` or `Writer`: `json_api`, `json_lines`, `disk`,
   `postgres`, `s3`, `gcs`, `volume`, `unity_catalog`, `bigquery`, `mongodb` (a source only, added
-  by [specs/mongodb_reader.md](../../specs/mongodb_reader.md)). The other keys of a section
-  are the connector's constructor arguments of the same name. (Amended by
+  by [specs/mongodb_reader.md](../../specs/mongodb_reader.md)) and `mysql` (a source and a target,
+  added by [specs/mysql_connectors.md](../../specs/mysql_connectors.md)). The other keys of a
+  section are the connector's constructor arguments of the same name. (Amended by
   [ADR 0017](0017-read-a-library-callbacks-own-parameters-from-a-section-named-after-it.md): a
   third section, `scd2`, holds the parameters of `SCD2`, which only that callback reads. The top
   level stays the job's except for the names `source`, `target` and `scd2`.)
@@ -112,13 +115,16 @@ the library or a feature request, not through the job's code.
 - **The `connection` argument takes the connection value of the system that needs one**
   (amendment of 2026-10-24, [spec](../../specs/mongodb_reader.md)). `ReadSource` takes a
   `PostgresConnection` for a `postgres` source and a `MongoDBConnection` for a `mongodb` source,
-  one existing argument widened per system. `AppendOnly`, `FullLoad` and `SCD2` keep
-  `PostgresConnection`, because `mongodb` is not a target: there is no MongoDB writer, a scope
-  decision whose reason is `TODO(maintainer)`. A later system with credentials, such as backlog
-  idea 8, would follow the same pattern. Why the existing argument widens rather than a new
-  argument being added: `TODO(maintainer)`. The technical reason the maintainer gave for the value
-  itself: the job reads the connection string from a secret store at run time and hands it to the
-  connector, so it never sits in the configuration.
+  one existing argument widened per system. `AppendOnly`, `FullLoad` and `SCD2` took
+  `PostgresConnection` only, because `mongodb` is not a target: there is no MongoDB writer, a scope
+  decision whose reason is `TODO(maintainer)`. The pattern this paragraph announced for backlog
+  idea 8 applies (amendment of 2026-10-24, [spec](../../specs/mysql_connectors.md), decision 8):
+  `ReadSource`, `AppendOnly`, `FullLoad` and `SCD2` take a `MySQLConnection` for `mysql`, so that
+  `ReadSource` takes `PostgresConnection | MongoDBConnection | MySQLConnection` and the three write
+  callbacks `PostgresConnection | MySQLConnection`, and the type check covers it. Why the existing
+  argument widens rather than a new argument being added: `TODO(maintainer)`. The technical reason
+  the maintainer gave for the value itself: the job reads the connection string from a secret store
+  at run time and hands it to the connector, so it never sits in the configuration.
 - **The callbacks check the type of `connection`** when they are built, for every system that
   takes one, in `ReadSource`, `AppendOnly`, `FullLoad` and `SCD2`. A connection of another
   system's class raises a `ValueError` with the file's path and the system in the message, before

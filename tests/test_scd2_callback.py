@@ -55,7 +55,7 @@ from ingestio.connector.all import (
 
 API = "https://api.example.com/v1/orders"
 TABLE = "main.gold.dim_customer"
-SUPPORTED = "bigquery, postgres, unity_catalog"
+SUPPORTED = "bigquery, mysql, postgres, unity_catalog"
 DEFAULT_TARGET: dict[str, object] = {"system": "unity_catalog", "table_name": TABLE}
 DEFAULT_SCD2: dict[str, object] = {
     "key_columns": ["customer_id"],
@@ -582,7 +582,7 @@ UNSUPPORTED: dict[str, dict[str, object]] = {
     "gcs": {"path": "gs://acme-lake/dim_customer", "format": "delta"},
     "volume": {"volume": "main.lake.curated", "path": "dim_customer", "format": "parquet"},
     "json_api": {},
-    "mysql": {},
+    "mariadb": {},
     "Unity_Catalog": {},
     "": {},
 }
@@ -839,8 +839,8 @@ def test_at008_a_missing_scd2_section_or_one_that_is_not_an_object_is_rejected(
     [
         ({}, "missing section 'target'"),
         (
-            {"target": {"system": "mysql"}},
-            f"target.system 'mysql' is not one of: {SUPPORTED}",
+            {"target": {"system": "mariadb"}},
+            f"target.system 'mariadb' is not one of: {SUPPORTED}",
         ),
     ],
     ids=["neither section", "unsupported system"],

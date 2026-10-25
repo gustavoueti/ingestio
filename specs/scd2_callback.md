@@ -677,9 +677,9 @@ Unless a criterion says otherwise:
   Given the default configuration, a `str` and a `pathlib.Path` naming the file are both accepted.
 - **AT-005**: Given a `target` section whose `system` is on the left, with the keys its writer
   takes when it has one, when `SCD2` is built, then it raises
-  `ValueError("<path>: target.system '<name>' is not one of: bigquery, postgres, unity_catalog")`
+  `ValueError("<path>: target.system '<name>' is not one of: bigquery, mysql, postgres, unity_catalog")`
   for `json_lines`, `disk`, `s3`, `gcs` and `volume`, each with the keys its writer requires, and for
-  `json_api`, `mysql`, `Unity_Catalog` and `""`. Given a section without `system`,
+  `json_api`, `mariadb`, `Unity_Catalog` and `""`. Given a section without `system`,
   it raises `ValueError("<path>: target.system is required")`; given `"system": 5`,
   `ValueError("<path>: target.system must be a string")`. See decision 26.
 - **AT-006**: Given the `target` section and the arguments on the left, when `SCD2` is built, then
@@ -726,7 +726,7 @@ Unless a criterion says otherwise:
   | `[]`, `"customer_id"` or `null` | `ValueError("<path>: section 'scd2' must be a JSON object")` |
 
   Given a file with neither `target` nor `scd2`, the error is `<path>: missing section 'target'`;
-  given `"target": {"system": "mysql"}` and no `scd2`, it is the `target.system` error of AT-005.
+  given `"target": {"system": "mariadb"}` and no `scd2`, it is the `target.system` error of AT-005.
   The `target` section is checked first.
 - **AT-009**: Given the `scd2` section on the left, when `SCD2` is built, then it raises
   `ValueError` with the message on the right, prefixed with `<path>: `:
@@ -1321,3 +1321,4 @@ None.
 | 2026-10-24 | implementation | implemented | After the validation return, the implementer made the written plan read the target in one scan: every target row enters the chain with a kind (current or closed), the windows partition by the key columns plus a closed flag, so closed versions stay out of the chain, the checks and the guard and are written as read. Only `_new_table` in `callback/io.py` changed. Suite: 1543 passed, 123 skipped (opt-in); ruff and mypy clean. |
 | 2026-10-24 | validation | validated | Passed by the acceptance-validator after the return: all 114 always-run cases, the full suite (1543 passed, 123 opt-in skipped), the 26 documentation examples, ruff, mypy and the lock check pass; the checks job and the write each read the target once, closed versions are written as read, and the guard covers every check. The 24 opt-in criteria and the Delta test of decision 26 were not run (no usable JVM in the development environment); CI runs them once `INGESTIO_SPARK_TESTS` is set, and the Delta test also needs `INGESTIO_DELTA_PACKAGE`. Backlog idea 12 removed by the main session. |
 | 2026-10-24 | validation | validated | After validation, by the main session at the maintainer's request: the maintainer gave the reason for decision 6 (the parameters are part of the job's configuration, so they belong in its configuration file, which makes the callback more customisable for whoever writes the job), recorded under decision 6 and in ADR 0017's Rationale in place of its `TODO(maintainer)`. Also updated: `.github/workflows/ci.yml` sets `INGESTIO_SPARK_TESTS` (decision 34), the README presents `SCD2` as shipped, and the philosophy and ADR 0016 no longer describe SCD2 as future work. |
+| 2026-10-24 | superseded in part | validated | Recorded by the main session under decision 40 of [mysql_connectors](mysql_connectors.md), approved on 2026-10-24: `mysql` joins the targets `SCD2` supports, which become `bigquery`, `mysql`, `postgres` and `unity_catalog`, and `SCD2`'s `connection` widens to `MySQLConnection`. The lists of supported targets elsewhere in this spec (decision 26, the Errors table) are superseded by that decision. AT-005 and AT-008 amended to match: the narrowed message lists `mysql`, and the unknown name `mysql` becomes `mariadb`, which that spec does not support (its decision 41). The test-writer of `mysql_connectors` updates `SUPPORTED`, `UNSUPPORTED` and `test_at008_...`. |

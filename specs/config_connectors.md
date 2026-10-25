@@ -693,8 +693,8 @@ callback, `ReadSource(path, ...)` or `WriteTarget(path, ...)`, before any `Proce
 
   | Section | `system` |
   |---|---|
-  | source | `mysql`, `Postgres`, `json_lines`, `""` |
-  | target | `mysql`, `BigQuery`, `json_api`, `""` |
+  | source | `mariadb`, `Postgres`, `json_lines`, `""` |
+  | target | `mariadb`, `BigQuery`, `json_api`, `""` |
 
   See decision 7.
 - **AT-013**: Given a section of the system on the left that holds one more key, then building
@@ -1070,3 +1070,4 @@ One entry per stage, recorded by the main session from the stage's report.
 | 2026-10-23 | validation | validated | The acceptance-validator passed all seven checks again after the return: AT-001 to AT-029 in 237 passing cases, full suite 1241 passed and 79 opt-in integration skips, all 24 documentation examples passing, ruff, format, mypy strict and `uv lock --check` clean. The five notes are settled and nothing else changed. The main session's rewrite of `README.md`, whose examples were run as written, and of `AGENTS.md` agrees with the spec, the docs and the amended philosophy. |
 | 2026-10-23 | superseded in part | validated | Recorded by the main session under decision 21 of [append_only_callback](append_only_callback.md): the parts of this spec that build a `WriteTarget` are superseded by `AppendOnly` and `FullLoad`. That means criteria AT-001 (its `WriteTarget` import), AT-002 to AT-004, AT-006 to AT-009, AT-011 to AT-019 (their target rows), AT-020 (its writer rows), AT-024 to AT-028 and AT-029 (its write); decision 6, for `WriteTarget`; and decision 13, except its rule that the configuration has no mode. Their `WriteTarget` cases were removed from `tests/test_config_connectors.py`. Every `ReadSource` part stands, and this spec keeps its status. |
 | 2026-10-24 | superseded in part | validated | Recorded by the main session under decision 18 of [scd2_callback](scd2_callback.md), approved on 2026-10-24: decision 11 is superseded in the part that leaves the whole top level of the file to the job. `SCD2` reads a top-level `scd2` section (decisions 6 and 29 there, ADR 0017), and the top-level names of the library's sections are reserved. Sections stay strict, and `ReadSource`, `AppendOnly` and `FullLoad` still ignore every member other than their own section, `scd2` included. No test of this spec is superseded, and this spec keeps its status. |
+| 2026-10-24 | amendment | validated | AT-012 amended by the main session, as [mysql_connectors](mysql_connectors.md) (What becomes outdated) asks, approved on 2026-10-24: `mysql` becomes a source and a target system there, so the unknown name of both rows is now `mariadb`, which that spec does not support (its decision 41). What the criterion checks is unchanged; the test-writer of `mysql_connectors` updates `test_at012_...` to match. |

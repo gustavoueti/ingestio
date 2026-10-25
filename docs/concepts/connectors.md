@@ -1978,6 +1978,409 @@ environments listed above.
   several collections at once, converting, flattening or renaming fields, MongoDB views, time series
   collections, the specifics of sharded clusters and Atlas features are not covered.
 
+### MySQL: `MySQLConnection`, `MySQLReader`, `MySQLWriter`
+
+```python
+from ingestio.connector.all import MySQLConnection, MySQLReader, MySQLWriter
+```
+
+These three classes are exported by `ingestio.connector.all` only, not by `ingestio`. They are built
+on Spark's JDBC data source with MySQL Connector/J, so they run distributed on a cluster: the reader
+returns a `pyspark.sql.DataFrame`, and the writer receives one. Both need a Spark runtime, and the
+writer also needs the [`mysql` extra](#extras). See [Supported
+environments](#environments-of-the-mysql-connectors).
+
+`MySQLReader` satisfies `Reader[DataFrame]` and `MySQLWriter` satisfies `Writer[DataFrame]`,
+structurally.
+
+In a configuration: `"system": "mysql"`, in the `source` section with the keys `table_name`
+(required), `watermark_column` and `options`, and in the `target` section with `table_name`
+(required) and `options`. `ReadSource`, `AppendOnly`, `FullLoad` and `SCD2` all need the argument
+`connection`, a `MySQLConnection` that the job builds; `ReadSource` also takes `watermark_value` and
+`spark`. The host, the database, the credentials, the port and the TLS mode are never keys. `mysql`
+is also a target of `SCD2`. The connectors follow the convention of [How a connector receives an
+ingestion's parameters](#how-a-connector-receives-an-ingestions-parameters).
+
+#### `MySQLConnection`
+
+```text
+MySQLConnection(
+    host: str, database: str, user: str, password: str,
+    *, port: int = 3306, ssl_mode: str | None = None,
+)
+```
+
+Where and how to reach one database. Like `PostgresConnection`, it is a value, not a third concept:
+it opens nothing, imports nothing, is immutable, and its arguments are readable as attributes of the
+same names. `ssl_mode` is `None` (both clients' default, `PREFERRED`), `DISABLED`, `PREFERRED`,
+`REQUIRED`, `VERIFY_CA` or `VERIFY_IDENTITY`, exactly, in uppercase. Invalid settings raise
+`ValueError` when the connection is built, the first that fails:
+
+| Argument | Rule | Message |
+|---|---|---|
+| `host` | not empty | `host must not be empty` |
+| `database` | not empty | `database must not be empty` |
+| `user` | not empty | `user must not be empty` |
+| `port` | from 1 to 65535 | `port must be between 1 and 65535` |
+| `ssl_mode` | one of the values above | `unsupported ssl_mode '<value>'` |
+
+The password is not validated. `repr` and `str` show what identifies the database and never the
+password:
+
+```text
+MySQLConnection(host='db.internal', port=3306, database='shop', user='ingest')
+MySQLReader(table_name='shop.orders', host='db.internal', database='shop')
+MySQLWriter(table_name='shop.orders', host='db.internal', database='shop')
+```
+
+**One mode for two clients.** The executors reach MySQL through Connector/J and the Spark driver
+through PyMySQL (the writer's transaction). The connection translates `ssl_mode` for both, so they
+run in the same TLS mode:
+
+| `ssl_mode` | Connector/J option `sslMode` | PyMySQL |
+|---|---|---|
+| `None` | not sent | its default, which tries TLS and falls back |
+| `DISABLED` | `DISABLED` | `ssl_disabled=True` |
+| `PREFERRED` | `PREFERRED` | its default |
+| `REQUIRED` | `REQUIRED` | TLS without certificate or host name checks |
+| `VERIFY_CA` | `VERIFY_CA` | TLS with certificate check, without host name check |
+| `VERIFY_IDENTITY` | `VERIFY_IDENTITY` | TLS with certificate and host name checks |
+
+The CA certificates are each client's default trust store: the JVM's for Connector/J, the system's
+for Python. A server with a private CA needs it installed in both, or Connector/J's trust store
+given through `options` (`trustCertificateKeyStoreUrl`) and Python's environment variable
+`SSL_CERT_FILE`. The connection takes no CA file.
+
+For Connector/J the URL is `jdbc:mysql://<host>:<port>/<database>`: an IPv6 host is wrapped in
+brackets and the database name is percent-encoded. The user and the password are passed as options,
+never inside the URL. For PyMySQL, the writer connects with keyword arguments only, with the
+character set `utf8mb4`.
+
+#### Table and column names
+
+`table_name` has the form `table` or `database.table`, on the reader and on the writer: MySQL's
+schema is the database. Anything else raises
+`ValueError("table_name must be 'table' or 'database.table'")` when the connector is built. A name
+without a database resolves to the connection's database. Every name the connectors write into SQL
+is wrapped in backticks, with a backtick inside doubled, in every `sql_mode`: `shop.orders` is the
+table `` `shop`.`orders` ``. Whether the case of a database or table name matters is the server's
+(`lower_case_table_names` and its file system); the connector quotes the name as given.
+
+#### `MySQLReader`
+
+```text
+MySQLReader(
+    table_name: str, connection: MySQLConnection,
+    *, watermark_column: str | None = None,
+    watermark_value: int | Decimal | str | date | None = None,
+    options: Mapping[str, str | int | float | bool] | None = None,
+    spark: SparkSession | None = None,
+)
+```
+
+`read()` returns a Spark DataFrame built with `spark.read.format("jdbc")`. It is lazy: the executors
+fetch the rows when an action runs on it. Building the reader touches neither Spark nor MySQL.
+
+- **Session.** `spark` when given. Otherwise `SparkSession.active()`, looked up when `read()` is
+  called, never when the reader is built. The reader never creates a session.
+- **Full read** (no `watermark_column`): one load of the quoted table. Every action on the DataFrame
+  queries the table again.
+- **Watermark read** (`watermark_column` given): only the rows with a watermark above
+  `watermark_value` (all of them when it is `None`) are read, and the filter runs inside MySQL.
+  `read()` first runs one query,
+  ``SELECT CAST(max(`col`) AS CHAR) AS upper_bound, max(`col`) AS upper_bound_value FROM `table` ``
+  with `` WHERE `col` > <value> `` when a value is given, and takes the highest watermark of the
+  slice as an upper bound. The DataFrame is then a subquery that selects the rows with
+  `` `col` > <value> AND `col` <= <bound> ``. When no row qualifies the slice is empty. The
+  consequences are those of `PostgresReader`:
+  - every action on the DataFrame reads the same range. Rows that arrive after `read()` with a
+    higher watermark are left for the next run, so a watermark that the job computes from the
+    DataFrame never goes past what the DataFrame holds;
+  - the comparison is strictly greater, and rows whose watermark is `NULL` are never read, the first
+    run included;
+  - one index on the watermark column serves both queries.
+- The reader decides no strategy. Whether a run is incremental, from which value, and how the next
+  watermark is computed and kept, belong to the job. The bound that `read()` captured is not
+  exposed.
+
+The reader raises `ValueError` when it is built:
+
+| Case | Message |
+|---|---|
+| `table_name` is not `table` or `database.table` | `table_name must be 'table' or 'database.table'` |
+| `watermark_value` without `watermark_column` | `watermark_value needs watermark_column` |
+| `watermark_column == ""` | `watermark_column must not be empty` |
+| `bool`, `float` or any other type | `unsupported watermark_value type: <type name>` |
+| a `Decimal` that is NaN or infinite | `watermark_value must be finite` |
+| a naive `datetime` | `watermark_value must be timezone-aware` |
+| a reserved key in `options` | `option '<key>' is set by the connector` |
+
+A job that takes the watermark from a Delta table gets naive datetimes from `collect()`: attach the
+zone, or pass a string.
+
+#### Literals
+
+MySQL reads a string literal differently under different server `sql_mode` values: backslash is an
+escape character unless `NO_BACKSLASH_ESCAPES` is set, so doubling the quote is not enough. A job
+does not control the server's mode, so every literal the reader writes means the same in every
+mode: a number is a numeric literal, and any other value is a hex string literal with the `utf8mb4`
+introducer, such as `_utf8mb4 X'4f27427269656e'` for `O'Brien`. No quote or backslash of a value
+reaches the SQL.
+
+| Type of `watermark_value` | Literal |
+|---|---|
+| `int`, but not `bool` | `str(value)`: `41` |
+| finite `decimal.Decimal` | `format(value, "f")`: `12.50` |
+| `str` | the hex literal of its UTF-8 bytes |
+| timezone-aware `datetime.datetime` | converted to UTC, then the hex literal of `isoformat(sep=" ")` without the offset |
+| `datetime.date` | the hex literal of `value.isoformat()` |
+
+Give the value the kind of the column: an `int` for an integer column, a `Decimal` for a `DECIMAL`,
+a `str` for a character column, a `date` for a `DATE`, an aware `datetime` for a `DATETIME` or
+`TIMESTAMP`. MySQL compares a string with a number as floating-point numbers, which is not exact for
+large values. A `DATETIME` column that holds wall-clock time in another zone takes its value as a
+`str`, which is sent as it is.
+
+The bound is MySQL's own text of the highest watermark. It is written unquoted when Spark types the
+column as numeric and the text is a number, so that a `BIGINT` key above 2^53 is compared exactly;
+otherwise as a hex literal.
+
+#### Time zones
+
+Every JDBC session of the reader and of the writer carries `connectionTimeZone=UTC` and
+`forceConnectionTimeZoneToSession=true`. So the bound query and the data load run in the same zone,
+which has no repeated hour; an aware datetime compares with a `TIMESTAMP` column as the same
+instant; and a `TIMESTAMP` value read and written back, as `SCD2` does, keeps its instant whatever
+the server's default `time_zone`. A `DATETIME` column, which MySQL never converts, is compared on
+the UTC wall clock, as `PostgresReader` compares a `timestamp without time zone` column. A user
+option that replaces these two gives the guarantees up.
+
+#### Options
+
+`options` holds Spark JDBC options and Connector/J properties passed through, such as
+`partitionColumn`, `lowerBound`, `upperBound`, `numPartitions`, `fetchsize`, `sessionInitStatement`
+or `queryTimeout`. A user option replaces the connector's option of the same name, with names
+compared case-insensitively as Spark does; values are passed as given.
+
+- The reader sets `useCursorFetch` to `true` and `fetchsize` to `10000`: Spark's MySQL dialect sets
+  no fetch size, and a fetch size alone does nothing in Connector/J, so a partition would be read
+  whole into an executor's memory. With them the server materialises each partition's result before
+  the first row is fetched.
+- The writer sets `rewriteBatchedStatements` to `true`, which turns Spark's batches into multi-row
+  `INSERT`s.
+- Both set the two time-zone options above.
+- In a watermark read the bound query leaves out `partitionColumn`, `lowerBound`, `upperBound` and
+  `numPartitions`, which Spark rejects together with a query; the data load carries them.
+- **Reserved keys**, in any case: `url`, `dbtable`, `query`, `user`, `password`, `driver`, and
+  `sslMode`, `useSSL`, `requireSSL` and `verifyServerCertificate`, which would give the executors
+  another TLS mode than the driver's. Giving one raises
+  `ValueError("option '<key>' is set by the connector")` when the connector is built.
+- The reader has no custom query, no column projection, no automatic partition bounds and no
+  `primary_key`.
+
+#### `MySQLWriter`
+
+```text
+MySQLWriter(
+    table_name: str, connection: MySQLConnection,
+    *, options: Mapping[str, str | int | float | bool] | None = None,
+)
+
+MySQLWriter.write(data: DataFrame, *, replace: bool = False) -> None
+```
+
+Writes a Spark DataFrame into a table that already exists, atomically. It needs PyMySQL: building a
+`MySQLWriter` without it raises
+`ImportError("MySQLWriter needs PyMySQL: pip install 'ingestio[mysql]'")`, chained to the original
+error. The reader never imports PyMySQL.
+
+- `write(data)` appends: it inserts every row of `data` and leaves the existing rows alone.
+- `write(data, replace=True)` deletes every row of the target and then inserts every row of `data`,
+  in the same transaction, so the target ends up holding exactly the rows of `data`.
+- The calling callback chooses at call time, by passing `replace`. The connector's configuration has
+  no mode and there is no `replace()` method. `AppendOnly` calls `write(data)`, and `FullLoad` and
+  `SCD2` call `write(data, replace=True)`.
+
+**How a write happens.** Spark's JDBC writer commits one transaction per partition, so a failed
+parallel write would leave part of the data in the target. The writer avoids that in four steps:
+
+1. **Setup.** One PyMySQL connection, on the Spark driver, runs
+   `CREATE TABLE <staging> LIKE <target>`. The staging table has the target's column definitions,
+   indexes and generated columns, and no foreign keys. A DataFrame column that the target lacks
+   fails the load before any row moves.
+2. **Load.** Spark writes the DataFrame into the staging table in parallel. No PyMySQL connection is
+   open meanwhile, so a long write does not meet idle timeouts.
+3. **Apply.** A new connection opens a transaction and runs `DELETE FROM <target>` (only with
+   `replace=True`) and `INSERT INTO <target> (<cols>) SELECT <cols> FROM <staging>`, then commits.
+4. **Drop.** After the commit, the same connection runs `DROP TABLE <staging>`.
+
+The writer uses `DELETE` and not `TRUNCATE` because in MySQL `TRUNCATE TABLE`, like `CREATE TABLE`
+and `DROP TABLE`, commits the open transaction implicitly. Every statement is executed without
+arguments, so a `%` in a name reaches MySQL as written.
+
+The staging table is named `ingestio_staging_` followed by 32 hexadecimal digits, new on every call,
+in the target's database (the connection's, when the target name has none). Steps 1 and 2 never
+touch the target, so other sessions see none of the new rows until step 3 commits and then all of
+them. The target's constraints, foreign keys, triggers and the defaults of the columns the DataFrame
+lacks apply in step 3.
+
+**Failures.** Nothing is swallowed: every error propagates out of `write()`.
+
+- A DataFrame without columns raises `ValueError("the DataFrame has no columns")` and does nothing
+  else.
+- When the setup fails, nothing was created and the error propagates.
+- When the load or the apply fails, the target is as it was, and the writer drops the staging table
+  on a new connection. The original exception propagates, the same object.
+- When that cleanup fails too, the original exception gets one note, added with `add_note`:
+  `staging table <stg> could not be dropped: <type>: <message>`. The cleanup error is not raised.
+- When the `DROP` of step 4 fails, the rows are already committed. Its exception propagates, with
+  one note: `the rows were committed to <target>, but staging table <stg> could not be dropped`. A
+  job must not append them again.
+- If the driver process dies, the cleanup cannot run, and a table named `ingestio_staging_<hex>` is
+  left behind for you to drop.
+
+The writer runs no DDL on the target: a missing target fails the setup (see [ADR
+0014](../decisions/0014-create-a-missing-target-only-when-derived-from-the-data.md)). The staging
+table is the writer's own mechanism, created and dropped within one call. It evaluates the DataFrame
+once, through the save, and never counts it. An empty DataFrame goes through the same steps: an
+append inserts nothing, and `replace=True` leaves the target empty. The connectors write no log
+lines.
+
+#### Example
+
+This runs as written, because building the objects opens nothing. Reading and writing need a Spark
+session with Connector/J and a MySQL server.
+
+```python
+from datetime import UTC, datetime
+
+from ingestio.connector.all import MySQLConnection, MySQLReader
+
+source = MySQLConnection("mysql.internal", "shop", "ingest", "s3cret", ssl_mode="VERIFY_IDENTITY")
+reader = MySQLReader(
+    "shop.orders",
+    source,
+    watermark_column="updated_at",
+    watermark_value=datetime(2026, 10, 1, tzinfo=UTC),
+)
+print(source)
+print(reader)
+
+try:
+    MySQLConnection("mysql.internal", "shop", "ingest", "s3cret", ssl_mode="required")
+except ValueError as error:
+    print(error)
+
+try:
+    MySQLReader("shop.orders", source, options={"sslMode": "DISABLED"})
+except ValueError as error:
+    print(error)
+```
+
+A job on Databricks: the file names the tables, the secrets stay in the job. `orders.json`:
+
+```json
+{
+  "source": {"system": "mysql", "table_name": "shop.orders", "watermark_column": "updated_at"},
+  "target": {"system": "unity_catalog", "table_name": "main.bronze.orders"}
+}
+```
+
+<!-- example: skip -->
+```python
+from ingestio import AppendOnly, Process, ReadSource, Step
+from ingestio.connector.all import MySQLConnection
+
+shop = MySQLConnection(
+    "mysql.internal",
+    "shop",
+    dbutils.secrets.get("mysql", "user"),  # the job reads its secrets; the library never does
+    dbutils.secrets.get("mysql", "password"),
+    ssl_mode="VERIFY_IDENTITY",
+)
+
+Process([
+    Step("extract", [ReadSource("orders.json", connection=shop, watermark_value=last_watermark())]),
+    Step("load", [AppendOnly("orders.json")]),
+]).run()
+```
+
+A full load into MySQL, from a file whose `target` is
+`{"system": "mysql", "table_name": "reporting.daily_sales"}`, places
+`FullLoad("daily_sales.json", connection=shop)` instead of `AppendOnly`.
+
+#### Environments of the MySQL connectors
+
+- **pyspark** 3.5 or later, a prerequisite that the runtime provides. It is never installed by the
+  extra.
+- **MySQL Connector/J** on the session's classpath, a prerequisite JAR, from 8.0.23 (the first
+  release with the time-zone properties), for example through
+  `spark.jars.packages=com.mysql:mysql-connector-j:<version>`. Whether a Databricks Runtime ships
+  Connector/J is not established: a job installs it as a cluster library.
+- **Databricks classic compute** on Databricks Runtime 15.4 LTS or later, in dedicated access mode,
+  with Connector/J as a cluster library. Standard access mode and serverless compute: no claim.
+- **Open-source Spark** 3.5 or later, on a Java release that Spark version supports.
+- **MySQL** 8.4 LTS and 9.x. MySQL 8.0 and earlier, and MariaDB, whose JDBC URL Spark's MySQL
+  dialect does not match: no claim.
+- **PyMySQL** 1.2.0 or later, on the driver, for the writer. The extra installs it with its `rsa`
+  extra, which `caching_sha2_password` needs over a connection without TLS.
+- The executors reach MySQL through Connector/J, and for the writer the driver reaches it through
+  PyMySQL too.
+
+**Privileges.** The reader needs `SELECT` on the table. The writer needs `CREATE`, `DROP`, `INSERT`
+and `SELECT` on the target's database, for the staging table, `SELECT` and `INSERT` on the target,
+and `DELETE` for `replace=True`.
+
+#### Limitations of the MySQL connectors
+
+- **Late commits.** A row committed after a read, with a watermark at or below the bound that read
+  captured, is never read by a later run. Rows that share the exact value of the previous watermark
+  but commit later are missed the same way.
+- **Full reads are not frozen.** Every action on a full read's DataFrame queries the table again.
+- **`DELETE` on large tables.** `write(data, replace=True)` deletes every row in the transaction,
+  which is slow on a large table and grows the undo log. It holds the row locks of the target until
+  the commit, so other writers wait; consistent reads see the old rows until then.
+- **Foreign keys and triggers on a replace.** The `DELETE` fires them: a referencing table whose
+  foreign key is `ON DELETE CASCADE` loses its child rows, one with `ON DELETE SET NULL` gets
+  `NULL`s, and one with `RESTRICT` or `NO ACTION` makes the replace fail with the target unchanged,
+  even when `data` holds the same keys. The target's `DELETE` triggers fire once per row.
+- **The binary log.** In `ROW` format, a replace writes a delete event for every row of the target
+  and an insert event for every row of `data`, and the staging table's rows reach the binary log and
+  the replicas too.
+- **Non-transactional engines.** A target in an engine without transactions, such as MyISAM, gets no
+  atomicity: a failure in the apply can leave part of the rows, or the target emptied. The writer
+  does not check the engine.
+- **One long transaction.** The apply copies the whole batch in one transaction, which the server
+  bounds, for instance with `max_binlog_cache_size` and, under Group Replication,
+  `group_replication_transaction_size_limit`.
+- **Spark task retries.** Spark's JDBC writer is not idempotent per partition. A task re-run after
+  its partition committed writes the partition twice into the staging table: the copy reaches the
+  target, or, when the target has a unique key that the staging table copied, the load fails with a
+  duplicate key.
+- **Server-side cursors.** With `useCursorFetch`, MySQL materialises each partition's result on the
+  server before the first row is fetched.
+- **Type conversion.** The values of the rows go through Spark's JDBC type mapping, which depends on
+  the Spark version, and through Connector/J. The connectors convert no value of their own, apart
+  from the watermark value's normalisation to UTC. How Connector/J converts `DATETIME` values when
+  the JVM's zone is not UTC is not established.
+- **Backticks in column names on Spark 3.5.** Spark quotes the DataFrame's column names in its own
+  SQL without doubling a backtick, so a column whose name holds one fails the read or the load on
+  Spark 3.5.0.
+- **Values of the wrong kind.** A watermark value whose kind differs from the column's, such as a
+  `str` for a `BIGINT` column, compares as floating-point numbers.
+- **Collations.** A `str` watermark compares in MySQL's collation rules; only `utf8mb4` columns are
+  covered by the integration tests.
+- **The staging table is visible** to other sessions of the database while it lives, and holds a
+  copy of the batch.
+- **Orphaned staging tables**, when the driver dies, when the cleanup fails, or when the `DROP`
+  after the commit fails.
+- **Not verified.** Several server behaviours above (the numeric comparison of strings, `DELETE` and
+  foreign keys under concurrent transactions, the privileges for the staging table, the transaction
+  limits) are documented from the MySQL manual and are checked by the opt-in integration tests, not
+  established by a source read.
+- The change data capture of the binary log, applying change events, upsert, merge, any DDL on the
+  target, custom queries and MariaDB are not covered. The CDC reader is a later spec.
+
 ### Disk: `DiskReader`, `DiskWriter`
 
 ```python
@@ -3578,6 +3981,7 @@ far:
 | Extra | Holds | Needed by |
 |---|---|---|
 | `postgres` | `psycopg[binary]>=3.2` | `PostgresWriter` |
+| `mysql` | `PyMySQL[rsa]>=1.2.0` | `MySQLWriter` |
 | `s3` | `boto3>=1.34` | `S3Reader`, only when the job passes no `client` |
 | `gcs` | `google-cloud-storage>=2.10` | `GcsReader`, only when the job passes no `client` |
 | `databricks` | `databricks-sdk>=0.20` | `VolumeReader`, only when the job passes no `client` |
@@ -3604,6 +4008,8 @@ The pattern:
 4. An engine that the runtime provides, such as pyspark on Databricks, is never a dependency of
    an extra. It is a documented prerequisite: here, pyspark 3.5 or later. Delta Lake is one too,
    so the Unity Catalog connectors add no extra. So is the MongoDB Spark Connector, a JAR on the
-   session's classpath, so `MongoDBReader` needs no extra and no native MongoDB client.
+   session's classpath, so `MongoDBReader` needs no extra and no native MongoDB client. MySQL
+   Connector/J is one too: `MySQLReader` needs no extra, and `MySQLWriter` needs `mysql` only for
+   PyMySQL, which runs its transaction on the driver.
 5. The `dev` dependency group holds the packages of every extra, so that `uv sync` gives an
    environment where the whole suite and mypy run.

@@ -19,6 +19,7 @@ from ingestio.connector.gcs import GcsReader, GcsWriter
 from ingestio.connector.http import JsonApiReader
 from ingestio.connector.local import DiskReader, DiskWriter, JsonLinesWriter
 from ingestio.connector.mongodb import MongoDBConnection, MongoDBReader
+from ingestio.connector.mysql import MySQLConnection, MySQLReader, MySQLWriter
 from ingestio.connector.postgres import PostgresConnection, PostgresReader, PostgresWriter
 from ingestio.connector.s3 import S3Reader, S3Writer
 from ingestio.connector.unity_catalog import UnityCatalogReader, UnityCatalogWriter
@@ -59,6 +60,14 @@ _SOURCES: Mapping[str, _System] = MappingProxyType(
             ("connection",),
             PostgresConnection,
         ),
+        "mysql": _System(
+            MySQLReader,
+            ("table_name",),
+            ("watermark_column", "options"),
+            ("connection", *_SPARK_READ),
+            ("connection",),
+            MySQLConnection,
+        ),
         "mongodb": _System(
             MongoDBReader,
             ("database", "collection"),
@@ -95,6 +104,14 @@ _TARGETS: Mapping[str, _System] = MappingProxyType(
             ("connection",),
             ("connection",),
             PostgresConnection,
+        ),
+        "mysql": _System(
+            MySQLWriter,
+            ("table_name",),
+            ("options",),
+            ("connection",),
+            ("connection",),
+            MySQLConnection,
         ),
         "s3": _System(S3Writer, ("path", "format"), ("options",)),
         "gcs": _System(GcsWriter, ("path", "format"), ("options",)),
@@ -283,7 +300,7 @@ def build_connector(
 
 # The target systems that SCD2 supports.
 _SCD2_SYSTEMS = MappingProxyType(
-    {name: _TARGETS[name] for name in ("bigquery", "postgres", "unity_catalog")}
+    {name: _TARGETS[name] for name in ("bigquery", "mysql", "postgres", "unity_catalog")}
 )
 # The keys of the `target` section that the reader of the same system takes as well.
 _READER_KEYS = ("table_name", "billing_project")

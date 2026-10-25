@@ -51,7 +51,7 @@ from ingestio.connector.all import (
 
 DAY = timedelta(days=1)
 API = "https://api.example.com/v1/orders"
-TARGET_NAMES = "bigquery, disk, gcs, json_lines, postgres, s3, unity_catalog, volume"
+TARGET_NAMES = "bigquery, disk, gcs, json_lines, mysql, postgres, s3, unity_catalog, volume"
 STAGING_NAME = re.compile(r"ingestio_staging_[0-9a-f]{32}")
 COLUMNS = ("id", "payload")
 OPTIONS_TYPE = "must be an object of strings, numbers and booleans"
@@ -1212,7 +1212,7 @@ AT015_ROWS: list[tuple[str, dict[str, object], str]] = [
             {"system": system},
             f"target.system '{system}' is not one of: {TARGET_NAMES}",
         )
-        for system in ("mysql", "BigQuery", "json_api", "")
+        for system in ("mariadb", "BigQuery", "json_api", "")
     ],
     _extra("json_lines", "append", True),
     _extra("json_lines", "replace", True),

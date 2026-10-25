@@ -66,6 +66,11 @@ What in version 0.0.1 leans towards batch:
   `MongoDBReader.read()` returns one slice, with a watermark fixed when the reader is built. A
   streaming or CDC source for MongoDB, such as change streams through the connector's streaming
   read, tracks a resume token and would be a different connector.
+- The MySQL connectors ([spec](../../specs/mysql_connectors.md)) lean towards batch:
+  `MySQLReader.read()` returns one slice, with a watermark fixed when the reader is built, and
+  `MySQLWriter.write()` needs the whole DataFrame before its transaction commits. A CDC source for
+  MySQL, reading the binary log from a position, is a different connector, the CDC reader of the
+  later spec `mysql_cdc`.
 - SCD2 ([spec](../../specs/scd2_callback.md)) leans towards batch: each run reads the whole batch
   and the whole target, checks the batch, and rewrites the dimension. A streaming SCD2, applying
   changes per micro-batch, would be another write strategy, a callback of its own (ADR 0016).
