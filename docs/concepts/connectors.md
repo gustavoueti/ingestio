@@ -67,7 +67,8 @@ connector:
 ```
 
 Every key of a section is a constructor argument of the connector the system builds, named as in
-the sections below, and credentials, clients and the watermark are arguments of the callback.
+the sections below, and credentials, clients, the watermark and the binary log position are
+arguments of the callback.
 [Configuration](configuration.md) has the systems, the keys, the callback arguments and the
 errors. Each connector section below says which `system` name and keys reach it.
 
@@ -1999,7 +2000,9 @@ In a configuration: `"system": "mysql"`, in the `source` section with the keys `
 `connection`, a `MySQLConnection` that the job builds; `ReadSource` also takes `watermark_value` and
 `spark`. The host, the database, the credentials, the port and the TLS mode are never keys. `mysql`
 is also a target of `SCD2`. The connectors follow the convention of [How a connector receives an
-ingestion's parameters](#how-a-connector-receives-an-ingestions-parameters).
+ingestion's parameters](#how-a-connector-receives-an-ingestions-parameters). The binary log of the
+same server is read by [`MySQLCDCReader`](#mysql-cdc-mysqlcdcreader), which has a section of its
+own.
 
 #### `MySQLConnection`
 
@@ -2378,8 +2381,398 @@ and `DELETE` for `replace=True`.
   foreign keys under concurrent transactions, the privileges for the staging table, the transaction
   limits) are documented from the MySQL manual and are checked by the opt-in integration tests, not
   established by a source read.
-- The change data capture of the binary log, applying change events, upsert, merge, any DDL on the
-  target, custom queries and MariaDB are not covered. The CDC reader is a later spec.
+- Applying change events, upsert, merge, any DDL on the target, custom queries and MariaDB are not
+  covered. The change data capture of the binary log is
+  [`MySQLCDCReader`](#mysql-cdc-mysqlcdcreader), and the callback that applies its events is a later
+  spec.
+
+### MySQL CDC: `MySQLCDCReader`
+
+```python
+from ingestio.connector.all import MySQLCDCReader
+```
+
+`MySQLCDCReader` reads the changes of one MySQL table from the server's binary log and returns them
+as a Spark DataFrame of change events, one row per changed row. It is exported by
+`ingestio.connector.all` only, not by `ingestio`, and it satisfies `Reader[DataFrame]`,
+structurally. It builds on the [MySQL connectors](#mysql-mysqlconnection-mysqlreader-mysqlwriter):
+it takes a `MySQLConnection` and gives the table's columns the types `MySQLReader` gives them.
+
+The reader only reads. It decides no write strategy, and applying the events to a target, an upsert
+and delete by key, is a callback of a later spec. Until then a job can keep the events as a log of
+changes, appending them to a table with `AppendOnly`.
+
+A watermark read never sees a row that was deleted. The binary log records every insert, update and
+delete, so a job that needs deletes reads the log, from the position its last run reached.
+
+In a configuration: `"system": "mysql_cdc"`, a source only, with the keys `table_name` and
+`server_id` (both required) and `options`. `ReadSource` needs the argument `connection`, a
+`MySQLConnection` that the job builds, and takes `binlog_position` and `spark`; it takes neither
+`client` nor `watermark_value`. The host, the database of the connection, the credentials, the port
+and the TLS mode are never keys. The connector follows the convention of [How a connector receives
+an ingestion's parameters](#how-a-connector-receives-an-ingestions-parameters), with one exception
+that [ADR 0013](../decisions/0013-connector-configuration-convention.md) records: the reader does
+not filter inside the source (see [Limitations](#limitations-of-the-mysql-cdc-reader)).
+
+```text
+MySQLCDCReader(
+    table_name: str, server_id: int, connection: MySQLConnection,
+    *, binlog_position: tuple[str, int] | None = None,
+    options: Mapping[str, str | int | float | bool] | None = None,
+    spark: SparkSession | None = None,
+)
+
+MySQLCDCReader.read() -> DataFrame
+```
+
+- `table_name` is `table` or `database.table`, as on `MySQLReader`. A name without a database is in
+  the connection's database.
+- `server_id` is the id the reader connects to the binary log with, as a replica does. It must be
+  unique among the replicas and readers of the server: a second client with the same id
+  disconnects the first. Only the job knows which ids are in use, so the id is a required key of the
+  configuration, an integer from 1 to 4294967295, and the same on every run.
+- `connection` is where the table lives, with the credentials of a user who holds the replication
+  privileges (see [Environments](#environments-of-the-mysql-cdc-reader)).
+- `binlog_position` is the position the last run reached, `(file, offset)`. Without it the reader
+  returns a [snapshot](#the-snapshot).
+- `options` and `spark` are those of `MySQLReader`: the Spark JDBC options and Connector/J
+  properties apply to the snapshot and to the read of the table's schema.
+
+Invalid arguments raise `ValueError` when the reader is built, the first that fails, in this order:
+
+| Argument | Rule | Message |
+|---|---|---|
+| `table_name` | one or two non-empty parts, split on `.` | `table_name must be 'table' or 'database.table'` |
+| `server_id` | an `int`, not a `bool`, from 1 to 4294967295 | `server_id must be an integer between 1 and 4294967295` |
+| `binlog_position` | `None`, or a `tuple` of exactly two items | `binlog_position must be a (file, offset) tuple` |
+| its file | a `str` of one or more characters, then `.`, then digits, as a whole | `binlog_position file must be a binary log name that ends in a number, such as 'binlog.000123'` |
+| its offset | an `int`, not a `bool`, of at least 4 | `binlog_position offset must be an integer of at least 4` |
+| `options` | no reserved key, those of `MySQLReader` | `option '<key>' is set by the connector` |
+
+After these checks, building imports PyMySQL and `python-mysql-replication`. Without them it raises
+`ImportError("MySQLCDCReader needs mysql-replication: pip install 'ingestio[mysql-cdc]'")`,
+chained to the original error; the argument errors come first, so they do not depend on the
+install. Building does nothing else: no Spark session, no network, no connection, no stream.
+`repr` and `str` show what identifies the reader on the server and never the password:
+
+```text
+MySQLCDCReader(table_name='shop.orders', server_id=4001, host='db.internal', database='shop')
+```
+
+#### The server
+
+The reader reads the binary log as a replica does, so the server must be set up for it. Every
+`read()`, the snapshot's included, first checks the server's global settings and raises
+`ValueError` for the first that is wrong, so that a job does not copy a table that it cannot follow
+afterwards:
+
+| Variable | Required | Message |
+|---|---|---|
+| `log_bin` | `1` | `the server's log_bin is '<value>'; MySQLCDCReader needs '1'` |
+| `binlog_format` | `ROW` | `the server's binlog_format is '<value>'; MySQLCDCReader needs 'ROW'` |
+| `binlog_row_image` | `FULL` | `the server's binlog_row_image is '<value>'; MySQLCDCReader needs 'FULL'` |
+| `binlog_row_metadata` | `FULL` | `the server's binlog_row_metadata is '<value>'; MySQLCDCReader needs 'FULL'` |
+| `binlog_row_value_options` | empty | `the server's binlog_row_value_options is '<value>'; MySQLCDCReader needs ''` |
+| `binlog_transaction_compression` | `0` | `the server's binlog_transaction_compression is '<value>'; MySQLCDCReader needs '0'` |
+
+`<value>` is the value as the server returned it; the values are compared ignoring case. The checks
+exist because the library that decodes the log does not fail on these settings: without
+`binlog_row_metadata=FULL` it only warns, and the events have no column names; with a compressed
+transaction it drops the transaction's rows without an error; and it does not rebuild a partial
+JSON value. The reader turns these silent losses into errors. `binlog_row_metadata` is `MINIMAL`
+by default on MySQL 8.4, so a server needs it set. A session can set `binlog_format`,
+`binlog_row_image`, `binlog_row_value_options` and `binlog_transaction_compression` for itself,
+and the check of the global values does not see it.
+
+The reader opens one PyMySQL connection per `read()`, with the arguments of the
+`MySQLConnection` (the TLS mode and the character set `utf8mb4` included), runs the checks and the
+statements below with no arguments, and closes it. It never opens a transaction.
+
+#### The position
+
+A position is `(file, offset)`: the name of a binary log file and an offset in it, a
+`tuple[str, int]`. It is not a GTID set, so the server needs no `gtid_mode=ON`. The position a job
+passes is one that the reader returned, the end of a transaction's commit, where the next
+transaction starts, so a read resumes at a transaction boundary. Do not make one up from an offset
+inside a transaction.
+
+- **The next position.** Every event carries the file and the offset of its transaction's commit in
+  `_ingestio_binlog_file` and `_ingestio_binlog_offset`. The job takes the next position from the
+  DataFrame, as it takes the next watermark: the file and the offset of the event whose
+  `_ingestio_sequence` is the highest. The job keeps it, in its own control table, and passes it
+  as `binlog_position` on the next run. The library computes, persists and advances no position.
+- **Order.** Two positions are ordered by the number that ends the file name, then by the offset,
+  never by the text of the name: `("binlog.1000000", 4)` comes after `("binlog.999999", 9000)`.
+- **A read with no event** gives no position. The job keeps the one it passed.
+- **The bound.** `read()` captures the end of the binary log when it starts, with
+  `SHOW BINARY LOG STATUS`, and reads from the position up to it, never past it. So, as with the
+  watermark readers, every action on the DataFrame sees the same events, and the next position
+  never passes what the DataFrame holds. A transaction that commits after the bound is read by the
+  next run. A position at or after the bound opens no stream, and the DataFrame has no rows.
+- **A purged position.** The server keeps its binary logs for a limited time
+  (`binlog_expire_logs_seconds`), which must be longer than the time between two runs. Before
+  opening the stream, a read with a position checks it against `SHOW BINARY LOGS` and raises
+  `ValueError`, naming the position and the oldest binary log, so that nothing changes silently.
+  The job decides to start over with a snapshot by passing no position. `<position>` is
+  `repr((file, offset))`, such as `('binlog.000040', 4)`:
+
+| Case | Message |
+|---|---|
+| its file is listed, and its offset is above the file's size | `binlog_position <position> is past the end of '<file>', which is <size> bytes long` |
+| its file is not listed, and the oldest binary log has the same name before its last `.` and a higher number | `binlog_position <position> has been purged from the server; its oldest binary log is '<oldest>'` |
+| its file is not listed, in any other case | `binlog_position <position> names a binary log the server does not have; its binary logs are '<oldest>' to '<newest>'` |
+
+An offset equal to the file's size is accepted: it is the end of the file. An empty list of binary
+logs cannot reach these cases, because the `log_bin` check runs first; if it were empty all the
+same, the check would pass. A purge between this check and the dump gives the server's own error
+of the dump, unchanged.
+
+#### The snapshot
+
+Without `binlog_position`, as on the first run, the reader returns a snapshot: the whole table read
+through Spark's JDBC source, as `MySQLReader` reads it in full, with each row an event whose
+operation is `snapshot`. The reader captures the current position before it reads the schema, so
+that no change made after it is lost, and every row carries it. The next run starts from it.
+
+- The snapshot is lazy: the rows are copied when the job runs an action, and every action reads the
+  table again, as a full read of `MySQLReader` does. The snapshot is not frozen, and a partitioned
+  read runs several queries, not one consistent read.
+- Changes committed between the capture and the copy are in the copy, and the next run reads them
+  again. An apply that upserts and deletes by key tolerates that.
+- An empty table gives no row, so no position: the next run takes a snapshot again.
+- A job that wants a new snapshot, after a failover or a purge, passes no position.
+
+#### The events
+
+With a position, `read()` returns the changes committed after it, up to the bound. The columns of
+the DataFrame are the table's, in the order and with the types and nullability of the JDBC schema
+that `MySQLReader` gives, then five metadata columns, in this order:
+
+| Column | Spark type | Nullable | Holds |
+|---|---|---|---|
+| `_ingestio_operation` | `string` | no | `insert`, `update`, `delete` or `snapshot` |
+| `_ingestio_binlog_file` | `string` | no | the binary log file of the transaction's commit, such as `binlog.000042` |
+| `_ingestio_binlog_offset` | `bigint` | no | the offset where the next event after the commit starts |
+| `_ingestio_commit_time` | `timestamp` | yes | the timestamp of the transaction's commit event, to the second; `null` for a snapshot row |
+| `_ingestio_sequence` | `bigint` | no | the order of the event within the read, from 1; `0` for every snapshot row |
+
+A table with a column of one of these names, in any case, makes the read raise
+`ValueError("the table already has a column '<name>', which MySQLCDCReader adds to every event")`.
+
+- **One row per changed row**, in the order of the binary log. A row inserted is an `insert`, from
+  the row after the change. A row deleted is a `delete`, from the row before it. A row updated is
+  an `update`, from the row after it; the row before an update is not in the DataFrame.
+- **A change of the primary key** becomes two rows, a `delete` of the old key and an `insert` of the
+  new one, so that the old key does not stay behind in a target applied by key. The key is the
+  primary key that the event was written with. A table with no primary key is read, and its
+  updates are never split; neither is a change of a unique key that is not the primary key.
+- **The position and the time** of a row are those of its transaction's commit, not of the row's
+  own event. The rows of a transaction share them. The sequence runs across transactions and
+  gives the apply a total order: several changes of one key in one batch need it.
+- **The commit time** is the timestamp in the header of the commit event, in seconds. It is the
+  start of the statement that committed, which for a long autocommitted statement is its start,
+  not its commit, and transactions that commit within the same second share it. The library that
+  decodes the log exposes no commit timestamp.
+- **Rows are buffered until the commit.** The reader holds the rows of the table until it sees the
+  commit of their transaction, and then stamps them. Rows with no commit within the bound are
+  dropped, and the next run, which starts at or before them, reads them.
+- Only the events of the table are kept: the library filters by database and table name.
+- Any other statement while rows are buffered fails the read, because the reader cannot tell what
+  the transaction became: an XA transaction, or the `ROLLBACK` of a transaction that changed a
+  non-transactional table, raises
+  `ValueError("the binary log has rows of the table at <position> that no commit follows")`.
+
+The events are built on the Spark driver and handed to Spark with `createDataFrame`, once the
+stream is closed. So every action on the DataFrame sees the same events, and none reads MySQL
+again. The events pass through the driver's memory first: every event of a read, and every row of
+the largest transaction.
+
+**A change of the table's columns.** Every column of the table's current schema, matched ignoring
+case, must be in the event, or the read raises
+`ValueError("the event of the table at <position> has no column '<name>'; the table's columns
+changed since it was written")`.
+A column added or renamed since the position fails the read, and the job takes a new snapshot. A
+column in the event that the schema lacks is left out: an invisible column, which `SELECT *` leaves
+out, or a column dropped since. The same check catches events written without column names. The
+reader follows no DDL.
+
+#### Values
+
+The binary log holds decoded Python values, not the JDBC types, so each value is converted for the
+type of its field in the table's schema. `None` stays `None` for every type. The first row of the
+table that matches the field's Spark type and the value's Python type applies:
+
+| Field's Spark type | Value from the binary log | Value in the DataFrame |
+|---|---|---|
+| `BooleanType` | `bool` | the value |
+| `BooleanType` | `int` (a `TINYINT(1)`) | `value != 0` |
+| `BooleanType` | a string of `0` and `1` (a `BIT(1)`) | `int(value, 2) != 0` |
+| `ByteType`, `ShortType`, `IntegerType`, `LongType` | `int`, not `bool` | the value |
+| `ByteType`, `ShortType`, `IntegerType`, `LongType` | a string of `0` and `1` (a `BIT(n)` on Spark 3.5) | `int(value, 2)` |
+| `DecimalType` | `Decimal` | the value |
+| `DecimalType` | `int`, not `bool` (a `BIGINT UNSIGNED`) | `Decimal(value)` |
+| `FloatType`, `DoubleType` | `float` | the value |
+| `StringType` | `str` | the value |
+| `StringType` | `set` (a `SET`) | its members, sorted, joined with `,` |
+| `StringType` | `dict`, `list`, `bool`, `int` or `float` (a `JSON` value) | `json.dumps(value, ensure_ascii=False)` |
+| `BinaryType` | `bytes` | the value |
+| `BinaryType` | a string of `0` and `1` (a `BIT(n)` on Spark 4) | the integer as big-endian bytes, `ceil(n/8)` of them |
+| `DateType` | `date`, not `datetime` | the value |
+| `DateType` | `int`, not `bool` (a `YEAR`) | `date(value, 1, 1)` |
+| `TimestampType` | naive `datetime` (a `TIMESTAMP` in UTC, a `DATETIME` as stored) | the value, in UTC |
+| `TimestampType` | aware `datetime` | the value, converted to UTC |
+| `TimestampType` | `timedelta` (a `TIME`) | 1970-01-01 in UTC plus the value |
+| `TimestampNTZType` | naive `datetime` | the value |
+| `TimestampNTZType` | `timedelta` (a `TIME`) | 1970-01-01 plus the value |
+
+Any other pair fails the read, instead of guessing:
+`ValueError("column '<name>' of the event at <position>: cannot turn a <python type> into
+<spark type>")`,
+where `<python type>` is the name of the Python type and `<spark type>` is the type's Spark name,
+such as `bigint`. The message holds no value of the table. Every `datetime` for a `timestamp`
+field is given the UTC zone, because PySpark reads a naive one in the Python process's local zone.
+
+#### Example
+
+This runs as written, because building the objects opens nothing. It needs `ingestio[mysql-cdc]`
+installed. Reading needs a Spark session, Connector/J and a MySQL server set up as above.
+
+```python
+from ingestio.connector.all import MySQLConnection, MySQLCDCReader
+
+source = MySQLConnection("mysql.internal", "shop", "cdc_user", "s3cret", ssl_mode="VERIFY_IDENTITY")
+reader = MySQLCDCReader("shop.orders", 4001, source, binlog_position=("binlog.000042", 1200))
+print(reader)
+
+try:
+    MySQLCDCReader("shop.orders", 0, source)
+except ValueError as error:
+    print(error)
+
+try:
+    MySQLCDCReader("shop.orders", 4001, source, binlog_position=("binlog.000042", 3))
+except ValueError as error:
+    print(error)
+```
+
+A job on Databricks: the file names the table and the server id, the secrets and the position stay
+in the job. Until the callback that applies events exists, the job appends the events to a table of
+changes. `orders_cdc.json`:
+
+```json
+{
+  "source": {"system": "mysql_cdc", "table_name": "shop.orders", "server_id": 4001},
+  "target": {"system": "unity_catalog", "table_name": "main.bronze.orders_changes"}
+}
+```
+
+<!-- example: skip -->
+```python
+from pyspark.sql import functions as F
+
+from ingestio import AppendOnly, Process, ReadSource, Step
+from ingestio.connector.all import MySQLConnection
+
+shop = MySQLConnection(
+    "mysql.internal",
+    "shop",
+    dbutils.secrets.get("mysql", "cdc_user"),  # the job reads its secrets; the library never does
+    dbutils.secrets.get("mysql", "cdc_password"),
+    ssl_mode="VERIFY_IDENTITY",
+)
+position = last_position()  # the job's own: None on the first run, which takes a snapshot
+
+process = Process([
+    Step("extract", [ReadSource("orders_cdc.json", into="changes", connection=shop,
+                                binlog_position=position)]),
+    Step("load", [AppendOnly("orders_cdc.json", key="changes")]),
+]).run()
+
+# The next position: the commit of the last event. A read with no event keeps the old one.
+events = process.state["changes"]
+if position is not None:  # the rows of a snapshot all carry the same position
+    events = events.orderBy(F.col("_ingestio_sequence").desc())
+last = events.select("_ingestio_binlog_file", "_ingestio_binlog_offset").first()
+if last is not None:
+    save_position((last[0], last[1]))  # the job's own: its control table
+```
+
+Each action on a snapshot's DataFrame reads the table again, this `first()` included.
+
+#### Environments of the MySQL CDC reader
+
+- **pyspark** 3.5 or later and **MySQL Connector/J** from 8.0.23 on the session's classpath, for the
+  snapshot and the table's schema, as for `MySQLReader`. Both are prerequisites that the runtime
+  provides.
+- **`python-mysql-replication`** 1.0.16 or later and **PyMySQL** 1.2.0 or later, on the driver.
+  The [`mysql-cdc` extra](#extras) installs them. 1.0.16 is the first release shown to run on
+  MySQL 8.4.
+- **Databricks classic compute** on Databricks Runtime 15.4 LTS or later, in dedicated access mode,
+  as for the MySQL connectors. Databricks Connect, standard access mode and serverless compute: no
+  claim.
+- **MySQL** 8.4 LTS and 9.x, set up as [The server](#the-server) says. MariaDB, MySQL 8.0 and
+  earlier: no claim. The binary logs must be kept longer than the time between two runs.
+- **Network.** The driver reaches the server's port for the control connection and the replication
+  stream, and the executors reach it through Connector/J.
+- **Privileges**, as far as is known: `REPLICATION SLAVE` for the dump, `REPLICATION CLIENT` for
+  `SHOW BINARY LOG STATUS` and `SHOW BINARY LOGS`, and `SELECT` on the table.
+- **`server_id`**: a number that no replica of the server and no other reader uses.
+
+#### Limitations of the MySQL CDC reader
+
+- **The driver's memory.** Every event of a read, and every row of the largest transaction, is held
+  in the driver's memory before the DataFrame exists.
+- **No filter in the source.** The replication protocol has no filter by table: the dump request
+  carries only the start offset, the flags, the client's `server_id` and the file name
+  (`python-mysql-replication` 1.0.17, `binlogstream.py`, `__connect_to_stream`). The server sends
+  the whole binary log of the range to the driver, every table's events included, and the library
+  filters them. The reader filters on the driver, not inside the source, which is the exception to
+  [ADR 0013](../decisions/0013-connector-configuration-convention.md). The binary log is the
+  mechanism that captures deletes. One reader reads one table, and each table's reader reads the
+  range again.
+- **A table with no changes** does not move the position forward, so each run reads the log again
+  from the same position, and the server can purge it; the job then takes a new snapshot.
+- **Failover.** A position does not survive a failover to another server, whose files differ; the
+  job takes a new snapshot. The reader cannot tell that a position comes from another server when
+  the file names coincide.
+- **Two basenames in one index** (not verified). Positions are ordered by the number that ends the
+  file name, across basenames. If the server's index ever listed files of two basenames, a
+  position in a file of the old basename could compare as at or after a bound in the new one, and
+  every read would return no events, with no error, until that file is purged. As far as is known,
+  this needs `log_bin_index` kept while `log_bin` is renamed.
+- **The snapshot** is not frozen, and changes made during it are read again by the next run.
+- **Session settings.** A session that changes a binary log setting for itself writes events that
+  the global check does not see; the reader can miss or misread its changes.
+- **The table's name as the server stores it.** The library matches `table_name` exactly. A name in
+  another case than the server's, under `lower_case_table_names=1` for instance, gives no event
+  and no error, while the read of the schema succeeds.
+- **Values that differ from the JDBC read.** A `SET`'s members are joined in sorted order, where
+  JDBC gives the column's order, and an empty `SET` reads as `null`, where JDBC gives `""`. A
+  `JSON` value is Python's text of it, which can differ from MySQL's in spacing and in the form of
+  numbers; a JSON string reads without its quotes and a JSON `null` as `null`. A `TIME` below zero
+  or from 24 hours on gives a timestamp outside 1970-01-01. A `DATETIME` matches the JDBC value
+  only under a JVM in UTC. The Spark types depend on the Spark version. An event and a snapshot of
+  the same row can therefore hold different values.
+- **Tables without a primary key.** Updates are never split, and an apply by key cannot use their
+  events.
+- **Changes of the table's columns** fail the read, as above; the values of a column dropped since
+  are left out.
+- **XA transactions and `ROLLBACK`.** An XA transaction, or a rolled-back transaction of a
+  non-transactional table, that holds rows of the table fails the read.
+- **Commit time** is the header timestamp of the commit event, in seconds, as above.
+- **`DeprecationWarning`.** On Python 3.12 and later the library emits one for each `TIMESTAMP`
+  value it decodes. Under `-W error` the read fails.
+- **The library's log lines.** The reader writes no log line, and passes `enable_logging=False` to
+  the library, which only skips its logging of the stream's parameters and of the column-name
+  cache. Its two warnings on missing optional metadata and its reconnect warning remain, and go
+  where the application's logging sends them.
+- **`server_id`.** An id that another replica or reader uses disconnects it.
+- **Not verified.** Several server behaviours above (the privileges, the order and the names of
+  the binary log files, when a position is a transaction boundary, the timestamp of a commit
+  event) are documented from the MySQL manual and checked by the opt-in integration tests, which
+  do not run in CI yet. They are not established by a source read.
+- Several tables in one reader, GTID positions, continuous or blocking reads, MariaDB, and applying
+  the events are not covered.
 
 ### Disk: `DiskReader`, `DiskWriter`
 
@@ -3982,6 +4375,7 @@ far:
 |---|---|---|
 | `postgres` | `psycopg[binary]>=3.2` | `PostgresWriter` |
 | `mysql` | `PyMySQL[rsa]>=1.2.0` | `MySQLWriter` |
+| `mysql-cdc` | `PyMySQL[rsa]>=1.2.0`, `mysql-replication>=1.0.16` | `MySQLCDCReader` always |
 | `s3` | `boto3>=1.34` | `S3Reader`, only when the job passes no `client` |
 | `gcs` | `google-cloud-storage>=2.10` | `GcsReader`, only when the job passes no `client` |
 | `databricks` | `databricks-sdk>=0.20` | `VolumeReader`, only when the job passes no `client` |
@@ -4010,6 +4404,8 @@ The pattern:
    so the Unity Catalog connectors add no extra. So is the MongoDB Spark Connector, a JAR on the
    session's classpath, so `MongoDBReader` needs no extra and no native MongoDB client. MySQL
    Connector/J is one too: `MySQLReader` needs no extra, and `MySQLWriter` needs `mysql` only for
-   PyMySQL, which runs its transaction on the driver.
+   PyMySQL, which runs its transaction on the driver. `MySQLCDCReader` always needs `mysql-cdc`,
+   for PyMySQL and for the library that decodes the binary log on the driver; the `mysql` extra
+   does not hold that library, because `MySQLWriter` never imports it.
 5. The `dev` dependency group holds the packages of every extra, so that `uv sync` gives an
    environment where the whole suite and mypy run.
