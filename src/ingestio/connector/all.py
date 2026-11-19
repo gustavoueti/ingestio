@@ -9,6 +9,7 @@ from ingestio.connector.mongodb import MongoDBConnection, MongoDBReader
 from ingestio.connector.mysql import MySQLCDCReader, MySQLConnection, MySQLReader, MySQLWriter
 from ingestio.connector.postgres import PostgresConnection, PostgresReader, PostgresWriter
 from ingestio.connector.s3 import S3Reader, S3Writer
+from ingestio.connector.snowflake import SnowflakeConnection, SnowflakeReader, SnowflakeWriter
 from ingestio.connector.unity_catalog import UnityCatalogReader, UnityCatalogWriter
 from ingestio.connector.volume import VolumeReader, VolumeWriter
 
@@ -33,6 +34,9 @@ __all__ = [
     "Reader",
     "S3Reader",
     "S3Writer",
+    "SnowflakeConnection",
+    "SnowflakeReader",
+    "SnowflakeWriter",
     "UnityCatalogReader",
     "UnityCatalogWriter",
     "VolumeReader",

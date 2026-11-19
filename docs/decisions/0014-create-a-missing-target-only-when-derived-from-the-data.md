@@ -76,10 +76,16 @@ spec, a reason for it beyond the one above.
 - `UnityCatalogWriter` creates a missing table as a managed Delta table with the DataFrame's
   columns, and nothing else. A job that needs partitioning, liquid clustering, constraints, a
   location or properties creates the table first. It never creates a catalog or a schema.
-- `PostgresWriter` keeps failing on a missing target, and so do `BigQueryWriter` and `MySQLWriter`
-  ([spec](../../specs/mysql_connectors.md), decision 7), which run no DDL on the target: the rule
-  allows creating, it does not require it. A staging table that a
-  writer creates and drops within one call is not the target and is outside this rule.
+- `PostgresWriter` keeps failing on a missing target, and so do `BigQueryWriter`, `MySQLWriter`
+  ([spec](../../specs/mysql_connectors.md), decision 7) and `SnowflakeWriter`
+  ([spec](../../specs/snowflake_connectors.md), decision 15), which run no DDL on the target: the
+  rule allows creating, it does not require it. A staging table that a
+  writer creates and drops within one call is not the target and is outside this rule, and neither
+  is the temporary stage that the Snowflake connector loads, its own mechanism.
+- The Snowflake connector creates a missing table from the DataFrame's schema by itself, which would
+  need a type mapping that it, not the data, chooses. `SnowflakeWriter` keeps it from doing so: it
+  maps columns by name, which makes the connector read the target's columns first and fail on a
+  missing target before any upload, and it reserves the options that would skip that lookup.
 - A later writer follows the line: it may create a missing target only in the form its system
   derives entirely from the data. If it cannot do so without choosing a layout, a location, a
   property or a type mapping, a missing target fails, and the job creates it.

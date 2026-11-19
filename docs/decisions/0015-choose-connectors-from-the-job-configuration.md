@@ -18,7 +18,9 @@
   [specs/mysql_connectors.md](../../specs/mysql_connectors.md), which adds the `mysql` system, a
   source and a target, and widens `connection` to `MySQLConnection`. It is amended on 2026-10-24 by
   [specs/mysql_cdc.md](../../specs/mysql_cdc.md), which adds the `mysql_cdc` system, a source only,
-  and `binlog_position`, a per-run argument of `ReadSource`.
+  and `binlog_position`, a per-run argument of `ReadSource`. It is amended on 2026-11-18 by
+  [specs/snowflake_connectors.md](../../specs/snowflake_connectors.md), which adds the `snowflake`
+  system, a source and a target, and widens `connection` to `SnowflakeConnection`.
 
 ## Context
 
@@ -44,8 +46,10 @@
   class name in snake case without `Reader` or `Writer`: `json_api`, `json_lines`, `disk`,
   `postgres`, `s3`, `gcs`, `volume`, `unity_catalog`, `bigquery`, `mongodb` (a source only, added
   by [specs/mongodb_reader.md](../../specs/mongodb_reader.md)) and `mysql` (a source and a target,
-  added by [specs/mysql_connectors.md](../../specs/mysql_connectors.md)) and `mysql_cdc` (a source
-  only, added by [specs/mysql_cdc.md](../../specs/mysql_cdc.md)). The other keys of a
+  added by [specs/mysql_connectors.md](../../specs/mysql_connectors.md)), `mysql_cdc` (a source
+  only, added by [specs/mysql_cdc.md](../../specs/mysql_cdc.md)) and `snowflake` (a source and a
+  target, added by [specs/snowflake_connectors.md](../../specs/snowflake_connectors.md)). The
+  other keys of a
   section are the connector's constructor arguments of the same name. (Amended by
   [ADR 0017](0017-read-a-library-callbacks-own-parameters-from-a-section-named-after-it.md): a
   third section, `scd2`, holds the parameters of `SCD2`, which only that callback reads. The top
@@ -130,7 +134,14 @@ the library or a feature request, not through the job's code.
   callbacks `PostgresConnection | MySQLConnection`, and the type check covers it. Why the existing
   argument widens rather than a new argument being added: `TODO(maintainer)`. The technical reason
   the maintainer gave for the value itself: the job reads the connection string from a secret store
-  at run time and hands it to the connector, so it never sits in the configuration.
+  at run time and hands it to the connector, so it never sits in the configuration. The pattern
+  applies again (amendment of 2026-11-18, [spec](../../specs/snowflake_connectors.md)):
+  `ReadSource`, `AppendOnly`, `FullLoad` and `SCD2` take a `SnowflakeConnection` for `snowflake`, so
+  that `ReadSource` takes
+  `PostgresConnection | MongoDBConnection | MySQLConnection | SnowflakeConnection` and the three
+  write callbacks `PostgresConnection | MySQLConnection | SnowflakeConnection`, and the type check
+  covers it. The job reads the private key or the token from a secret store at run time and builds
+  the `SnowflakeConnection` with it, so neither sits in the configuration.
 - **`ReadSource` gains `binlog_position`** (amendment of 2026-10-24,
   [spec](../../specs/mysql_cdc.md), decisions 3, 28 and 29): a keyword-only argument after
   `watermark_value`, a `tuple[str, int]` that the connector validates, taken by `mysql_cdc` alone.

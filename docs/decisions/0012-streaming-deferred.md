@@ -76,6 +76,11 @@ What in version 0.0.1 leans towards batch:
   bound frozen when it reads, and holds the events in the driver's memory. A streaming CDC source
   that tracks its own offsets in a checkpoint would be a different connector. Nothing here closes
   the door to streaming.
+- The Snowflake connectors ([spec](../../specs/snowflake_connectors.md)) lean towards batch:
+  `SnowflakeReader.read()` returns one slice, with a watermark fixed when the reader is built, and
+  `SnowflakeWriter.write()` needs the whole DataFrame staged before its transaction commits. A
+  streaming source or target for Snowflake, such as a stream on a table, Snowpipe Streaming or the
+  connector's Structured Streaming write, would be a different connector.
 - SCD2 ([spec](../../specs/scd2_callback.md)) leans towards batch: each run reads the whole batch
   and the whole target, checks the batch, and rewrites the dimension. A streaming SCD2, applying
   changes per micro-batch, would be another write strategy, a callback of its own (ADR 0016).

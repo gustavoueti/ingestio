@@ -1389,13 +1389,13 @@ criterion that rests on one of decisions 27 to 47 names it. Unless a criterion s
 
 - **AT-039**: Given a `source` whose `system` is `"MySQL_CDC"`, when `ReadSource(path)` is built,
   then it raises
-  `ValueError("<path>: source.system 'MySQL_CDC' is not one of: bigquery, disk, gcs, json_api, mongodb, mysql, mysql_cdc, postgres, s3, unity_catalog, volume")`.
+  `ValueError("<path>: source.system 'MySQL_CDC' is not one of: bigquery, disk, gcs, json_api, mongodb, mysql, mysql_cdc, postgres, s3, snowflake, unity_catalog, volume")`.
   Given the `target` `{"system": "mysql_cdc", "table_name": "shop.orders"}`, when
   `AppendOnly(path, connection=conn)` or `FullLoad(path, connection=conn)` is built, then it raises
-  `ValueError("<path>: target.system 'mysql_cdc' is not one of: bigquery, disk, gcs, json_lines, mysql, postgres, s3, unity_catalog, volume")`;
+  `ValueError("<path>: target.system 'mysql_cdc' is not one of: bigquery, disk, gcs, json_lines, mysql, postgres, s3, snowflake, unity_catalog, volume")`;
   with an `scd2` section `{"key_columns": ["id"], "effective_time_column": "updated_at"}` added,
   `SCD2(path, connection=conn)` raises
-  `ValueError("<path>: target.system 'mysql_cdc' is not one of: bigquery, mysql, postgres, unity_catalog")`.
+  `ValueError("<path>: target.system 'mysql_cdc' is not one of: bigquery, mysql, postgres, snowflake, unity_catalog")`.
 - **AT-040**: Then the keyword-only parameters of `inspect.signature(ReadSource)` are, in this
   order, `into`, `connection`, `client`, `watermark_value`, `binlog_position` and `spark`, and
   `binlog_position`'s default is `None` (decision 28). `AppendOnly(path, binlog_position=P)`,
@@ -1773,3 +1773,4 @@ One entry per stage, recorded by the main session from the stage's report.
 | 2026-10-24 | documentation | documented | After the return, the doc-keeper settled the validator's notes in `docs/concepts/connectors.md`: the library's log lines as the corrected V4 says (three warnings remain), the `binlog_position` file rule with one or more characters before the dot, the new limitation "Two basenames in one index" marked not verified, and the empty `SHOW BINARY LOGS` note in the position check. It made each ADR's Status line and its row in `docs/index.md` agree, with spec amendments named in the Evidence lines: ADR 0015's row now reads "amended by 0016, 0017", ADR 0013 and ADR 0003 now say "amended by 0015". Checked by the main session: 32 documentation examples pass, and no added prose line runs past 100 columns. |
 | 2026-10-24 | implementation | implemented | After the return, the implementer settled the three notes in `connector/mysql.py`: `MySQLCDCReader` validates `options` without keeping the unused `_options` attribute, the module docstring covers the binary log and `python-mysql-replication`, and the Spark SQL literal helper is `_string_literal`, with the `escapedStringLiterals` assumption in its docstring as in `unity_catalog.py`. Nothing else changed. Checked by the main session: 2148 passed, 151 skipped, ruff, format, mypy strict and `uv lock --check` clean. |
 | 2026-10-24 | validation | validated | The acceptance-validator passed all seven checks again after the return: AT-001 to AT-042 in 236 passing cases, the full suite 2148 passed and 151 opt-in skips, 32 documentation examples, ruff, format, mypy strict and `uv lock --check` clean. Every non-blocking note is settled (V4 and the log limitation, the empty `SHOW BINARY LOGS`, two basenames in one index, `_options`, the module docstring, `_string_literal`, the file rule, the ADR status lines, the README) and nothing else changed. The 11 integration cases (8 tier 1, 3 tier 2) remain not run: no MySQL server and no JVM here, and the maintainer postponed them in CI. |
+| 2026-11-18 | amendment | validated | AT-039 amended by the main session while rebasing [snowflake_connectors](snowflake_connectors.md) onto this spec's release, v0.8.0, as that spec (What becomes outdated) leaves to it: `snowflake` becomes a source, a target and an `SCD2` target system there, so the three messages of AT-039 list `snowflake`. What the criterion checks is unchanged; `SOURCE_NAMES`, `TARGET_NAMES` and `SCD2_NAMES` in `tests/test_mysql_cdc.py` gain `snowflake`. The lists under Behaviour record the state when this spec landed. |

@@ -55,7 +55,7 @@ from ingestio.connector.all import (
 
 API = "https://api.example.com/v1/orders"
 TABLE = "main.gold.dim_customer"
-SUPPORTED = "bigquery, mysql, postgres, unity_catalog"
+SUPPORTED = "bigquery, mysql, postgres, snowflake, unity_catalog"
 DEFAULT_TARGET: dict[str, object] = {"system": "unity_catalog", "table_name": TABLE}
 DEFAULT_SCD2: dict[str, object] = {
     "key_columns": ["customer_id"],
