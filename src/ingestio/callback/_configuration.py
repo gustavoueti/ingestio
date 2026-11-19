@@ -19,7 +19,7 @@ from ingestio.connector.gcs import GcsReader, GcsWriter
 from ingestio.connector.http import JsonApiReader
 from ingestio.connector.local import DiskReader, DiskWriter, JsonLinesWriter
 from ingestio.connector.mongodb import MongoDBConnection, MongoDBReader
-from ingestio.connector.mysql import MySQLConnection, MySQLReader, MySQLWriter
+from ingestio.connector.mysql import MySQLCDCReader, MySQLConnection, MySQLReader, MySQLWriter
 from ingestio.connector.postgres import PostgresConnection, PostgresReader, PostgresWriter
 from ingestio.connector.s3 import S3Reader, S3Writer
 from ingestio.connector.unity_catalog import UnityCatalogReader, UnityCatalogWriter
@@ -28,7 +28,7 @@ from ingestio.connector.volume import VolumeReader, VolumeWriter
 __all__ = ["Scd2Plan", "Scd2Settings", "TargetReader", "build_connector", "build_scd2"]
 
 # The order in which the callback arguments are checked.
-_ARGUMENTS = ("connection", "client", "watermark_value", "spark")
+_ARGUMENTS = ("connection", "client", "watermark_value", "binlog_position", "spark")
 
 
 @dataclass(frozen=True)
@@ -65,6 +65,14 @@ _SOURCES: Mapping[str, _System] = MappingProxyType(
             ("table_name",),
             ("watermark_column", "options"),
             ("connection", *_SPARK_READ),
+            ("connection",),
+            MySQLConnection,
+        ),
+        "mysql_cdc": _System(
+            MySQLCDCReader,
+            ("table_name", "server_id"),
+            ("options",),
+            ("connection", "binlog_position", "spark"),
             ("connection",),
             MySQLConnection,
         ),
@@ -162,6 +170,7 @@ def _type_error(key: str) -> str | None:
     if key in _STRING_KEYS:
         return "a string"
     return {
+        "server_id": "an integer",
         "timeout": "a number",
         "headers": "an object of strings",
         "options": "an object of strings, numbers and booleans",
@@ -173,6 +182,8 @@ def _well_typed(key: str, value: object) -> bool:
         return isinstance(value, str)
     if key == "timeout":
         return _is_number(value)
+    if key == "server_id":
+        return isinstance(value, int) and not isinstance(value, bool)
     if key == "headers":
         return isinstance(value, dict) and all(isinstance(item, str) for item in value.values())
     return isinstance(value, dict) and all(

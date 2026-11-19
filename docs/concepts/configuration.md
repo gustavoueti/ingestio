@@ -50,7 +50,8 @@ connector](connectors.md#using-a-connector) shows.
 ## Using it in a job
 
 ```text
-ReadSource(config, *, into="records", connection=None, client=None, watermark_value=None, spark=None)
+ReadSource(config, *, into="records", connection=None, client=None, watermark_value=None,
+           binlog_position=None, spark=None)
 AppendOnly(config, *, key="records", connection=None, client=None)
 FullLoad(config, *, key="records", connection=None, client=None)
 SCD2(config, *, key="records", connection=None, client=None)
@@ -63,8 +64,9 @@ All four are exported by `ingestio` and by `ingestio.callback.all`.
   when the callback is built. Anything else raises `TypeError`, a connector instance included.
 - `into` is the key of `Process.state` that receives the payload, and `key` the key that
   `AppendOnly`, `FullLoad` or `SCD2` writes. Both default to `"records"`.
-- The write callbacks take no `replace`, `spark` or `watermark_value`: which of them to place is
-  the choice of write strategy. `SCD2` takes no column names either: they are in its `scd2` section.
+- The write callbacks take no `replace`, `spark`, `watermark_value` or `binlog_position`: which of
+  them to place is the choice of write strategy. `SCD2` takes no column names either: they are in
+  its `scd2` section.
 - The callback reads the file once, when it is built. Changing or deleting it afterwards changes
   nothing: the process runs with what was read. Each callback reads the file for itself, so a
   process with a `ReadSource` and an `AppendOnly` built from the same path reads it twice.
@@ -86,30 +88,34 @@ name. The library still reads no secret.
 - `connection`: the connection value of each system that takes one, required by it: a
   [`PostgresConnection`](connectors.md#postgresconnection) for `postgres`, and a
   [`MongoDBConnection`](connectors.md#mongodbconnection) for `mongodb`, and a
-  [`MySQLConnection`](connectors.md#mysqlconnection) for `mysql`. The callback checks its
-  type when it is built, see [Errors](#errors).
+  [`MySQLConnection`](connectors.md#mysqlconnection) for `mysql` and for `mysql_cdc`. The
+  callback checks its type when it is built, see [Errors](#errors).
 - `client`: the SDK client of the system, for the systems that take one.
 - `watermark_value`: the last watermark already ingested. `ReadSource` only.
+- `binlog_position`: the binary log position the last run reached, `(file, offset)`, a
+  `tuple[str, int]`. `ReadSource` only, and only for `mysql_cdc`. The job keeps it and takes the
+  next one from the events, as it does with a watermark. The connector validates it.
 - `spark`: the session to read with. `ReadSource` only, for the Spark systems; the active session
   when omitted.
 
-| `system` | Section | `connection` | `client` | `watermark_value` | `spark` |
-|---|---|---|---|---|---|
-| `json_api` | source | no | no | no | no |
-| `disk` | source | no | no | optional | optional |
-| `postgres` | source | **required**: a `PostgresConnection` | no | optional | optional |
-| `mongodb` | source | **required**: a `MongoDBConnection` | no | optional | optional |
-| `mysql` | source | **required**: a `MySQLConnection` | no | optional | optional |
-| `s3` | source | no | optional: a boto3 S3 client | optional | optional |
-| `gcs` | source | no | optional: a `google.cloud.storage.Client` | optional | optional |
-| `volume` | source | no | optional: a `databricks.sdk.WorkspaceClient` | optional | optional |
-| `unity_catalog` | source | no | no | optional | optional |
-| `bigquery` | source | no | optional: a `google.cloud.bigquery.Client` | optional | optional |
-| `json_lines` | target | no | no | – | – |
-| `disk`, `s3`, `gcs`, `volume`, `unity_catalog` | target | no | no | – | – |
-| `postgres` | target | **required**: a `PostgresConnection` | no | – | – |
-| `mysql` | target | **required**: a `MySQLConnection` | no | – | – |
-| `bigquery` | target | no | optional: a `google.cloud.bigquery.Client` | – | – |
+| `system` | Section | `connection` | `client` | `watermark_value` | `binlog_position` | `spark` |
+|---|---|---|---|---|---|---|
+| `json_api` | source | no | no | no | no | no |
+| `disk` | source | no | no | optional | no | optional |
+| `postgres` | source | **required**: a `PostgresConnection` | no | optional | no | optional |
+| `mongodb` | source | **required**: a `MongoDBConnection` | no | optional | no | optional |
+| `mysql` | source | **required**: a `MySQLConnection` | no | optional | no | optional |
+| `mysql_cdc` | source | **required**: a `MySQLConnection` | no | no | optional | optional |
+| `s3` | source | no | optional: a boto3 S3 client | optional | no | optional |
+| `gcs` | source | no | optional: a `google.cloud.storage.Client` | optional | no | optional |
+| `volume` | source | no | optional: a `databricks.sdk.WorkspaceClient` | optional | no | optional |
+| `unity_catalog` | source | no | no | optional | no | optional |
+| `bigquery` | source | no | optional: a `google.cloud.bigquery.Client` | optional | no | optional |
+| `json_lines` | target | no | no | – | – | – |
+| `disk`, `s3`, `gcs`, `volume`, `unity_catalog` | target | no | no | – | – | – |
+| `postgres` | target | **required**: a `PostgresConnection` | no | – | – | – |
+| `mysql` | target | **required**: a `MySQLConnection` | no | – | – | – |
+| `bigquery` | target | no | optional: a `google.cloud.bigquery.Client` | – | – | – |
 
 - An argument that is `None` is not given, for every system. A job that passes
   `watermark_value=None` on its first run passes nothing.
@@ -134,6 +140,7 @@ can add to it or replace an entry, and it is not exported. A new system is a cha
 | `postgres` | `PostgresReader` | `PostgresWriter` | `postgres`, for the writer |
 | `mongodb` | `MongoDBReader` | not a target | none |
 | `mysql` | `MySQLReader` | `MySQLWriter` | `mysql`, for the writer |
+| `mysql_cdc` | `MySQLCDCReader` | not a target | `mysql-cdc` |
 | `s3` | `S3Reader` | `S3Writer` | `s3`, for a reader without `client` |
 | `gcs` | `GcsReader` | `GcsWriter` | `gcs`, for a reader without `client` |
 | `volume` | `VolumeReader` | `VolumeWriter` | `databricks`, for a reader without `client` |
@@ -153,6 +160,7 @@ The keys of a section, besides `system`:
 | `mongodb` | source | `database`, `collection` | `watermark_column`, `schema_hints`, `options` |
 | `mysql` | source | `table_name` | `watermark_column`, `options` |
 | `mysql` | target | `table_name` | `options` |
+| `mysql_cdc` | source | `table_name`, `server_id` | `options` |
 | `s3` | source | `path`, `format` | `watermark_pattern`, `schema`, `options` |
 | `s3` | target | `path`, `format` | `options` |
 | `gcs` | source | `path`, `format` | `watermark_pattern`, `schema`, `options` |
@@ -166,7 +174,8 @@ The keys of a section, besides `system`:
 
 - The required keys are the connector's positional arguments other than `connection`. A key that
   is left out leaves the argument at its default.
-- Not keys: the callback arguments above (`connection`, `client`, `watermark_value`, `spark`),
+- Not keys: the callback arguments above (`connection`, `client`, `watermark_value`,
+  `binlog_position`, `spark`),
   `append`, `replace` and `mode`, and any credential, such as `user`, `password`, `host` or the
   connection string `uri` of `mongodb`. Like any other key a system does not take, they are
   rejected.
@@ -175,7 +184,13 @@ The keys of a section, besides `system`:
   `schema` key of the file systems, and there is no JSON form of it.
   See [Schema hints](connectors.md#schema-hints).
 - `mongodb` is a source only: `{"target": {"system": "mongodb", ...}}` raises the error of a system
-  that is not a target.
+  that is not a target. So is `mysql_cdc`.
+- `mysql_cdc` takes `table_name` as `table` or `database.table` and `server_id`, the id the reader
+  connects to the binary log with, as a JSON integer from 1 to 4294967295 that no replica of the
+  server and no other reader uses. The range is the connector's. The host, the database of the
+  connection, the credentials, the port and `ssl_mode` are never keys, and neither is
+  `watermark_column`: the reader takes its position from `binlog_position`, an argument of the
+  callback. See [MySQL CDC](connectors.md#mysql-cdc-mysqlcdcreader).
 - `schema` is a DDL string, such as `"id INT, payload STRING"`. A `StructType` cannot be given
   through `ReadSource`.
 - `headers` of `json_api` is not a place for credentials: `JsonApiReader` does not support
@@ -200,6 +215,7 @@ parses them, `int` or `float`.
 | `system`, `url`, `encoding`, `path`, `format`, `watermark_pattern`, `schema`, `table_name`, `watermark_column`, `volume`, `billing_project`, `database`, `collection`, `schema_hints` | string | `<section>.<key> must be a string` |
 | `timeout` | number (`true` and `false` are not numbers) | `<section>.<key> must be a number` |
 | `headers` | object whose values are strings | `<section>.<key> must be an object of strings` |
+| `server_id` | integer: a number written without a fraction or an exponent (`true`, `false` and `null` are not integers) | `<section>.<key> must be an integer` |
 | `options` | object whose values are strings, numbers or booleans | `<section>.<key> must be an object of strings, numbers and booleans` |
 
 ## Append and replace
@@ -276,8 +292,8 @@ Changing the key columns or the tracked columns is an edit of the JSON. One dime
 | a required key is missing | `<path>: <section>.<key> is required for system '<system>'` |
 | a value has the wrong JSON type, or is `null` | `<path>: <section>.<key> must be ...`, as in [JSON types](#json-types) |
 | a callback argument that the system does not take is given | `<path>: <section> system '<system>' takes no argument <name>` |
-| `connection` is missing for `postgres`, `mongodb` or `mysql` | `<path>: <section> system '<system>' needs the argument connection` |
-| `connection` is not an instance of the system's connection class (`PostgresConnection` for `postgres`, `MongoDBConnection` for `mongodb`, `MySQLConnection` for `mysql`); a subclass is accepted | `<path>: <section> system '<system>' needs a <class> as the argument connection, not <type name>` |
+| `connection` is missing for `postgres`, `mongodb`, `mysql` or `mysql_cdc` | `<path>: <section> system '<system>' needs the argument connection` |
+| `connection` is not an instance of the system's connection class (`PostgresConnection` for `postgres`, `MongoDBConnection` for `mongodb`, `MySQLConnection` for `mysql` and `mysql_cdc`); a subclass is accepted | `<path>: <section> system '<system>' needs a <class> as the argument connection, not <type name>` |
 | the connector rejects a value, such as `table_name: "orders"` for `unity_catalog` | the connector's `ValueError`, the same object, with one note |
 | the system's extra is not installed | the connector's `ImportError`, the same object, with one note |
 | `SCD2` only: `target.system` is not `bigquery`, `mysql`, `postgres` or `unity_catalog` | `<path>: target.system '<name>' is not one of: bigquery, mysql, postgres, unity_catalog` |
@@ -294,9 +310,9 @@ Changing the key columns or the tracked columns is an edit of the JSON. One dime
 | `state[key]` is missing | `KeyError`, whose `args` are `(key,)`, when the process runs; the writer is not called |
 
 - `<names>` are the names valid for the section, sorted and separated by `, `: for a source
-  `bigquery, disk, gcs, json_api, mongodb, mysql, postgres, s3, unity_catalog, volume`, for a target
-  `bigquery, disk, gcs, json_lines, mysql, postgres, s3, unity_catalog, volume`.
-- `<class>` is `MongoDBConnection` for `mongodb`, `MySQLConnection` for `mysql` and
+  `bigquery, disk, gcs, json_api, mongodb, mysql, mysql_cdc, postgres, s3, unity_catalog, volume`,
+  for a target `bigquery, disk, gcs, json_lines, mysql, postgres, s3, unity_catalog, volume`.
+- `<class>` is `MongoDBConnection` for `mongodb`, `MySQLConnection` for `mysql` and `mysql_cdc`, and
   `PostgresConnection` for `postgres`, and
   `<type name>` is `type(connection).__name__`. So a `MongoDBConnection` given to a `postgres`
   source raises `<path>: source system 'postgres' needs a PostgresConnection as the argument
@@ -328,7 +344,8 @@ raises, which names the extra: `PostgresWriter needs psycopg: pip install 'inges
 It follows the connector's rule of needing the package only when it would import it: an `s3`, `gcs`
 or `volume` source given a `client` needs no extra, and a `bigquery` source without
 `watermark_column` needs none either, and neither does a `mongodb` or a `mysql` source. A `mysql`
-target needs the `mysql` extra. So changing a job's system is an edit of its JSON and, when the new
+target needs the `mysql` extra, and a `mysql_cdc` source always needs the `mysql-cdc` extra. So
+changing a job's system is an edit of its JSON and, when the new
 system needs an extra, of its install.
 
 ## Example

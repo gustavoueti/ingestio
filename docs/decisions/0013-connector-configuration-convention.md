@@ -1,6 +1,6 @@
 # 0013. Give a connector an ingestion's parameters as constructor arguments
 
-- **Status:** accepted
+- **Status:** accepted, amended by [0015](0015-choose-connectors-from-the-job-configuration.md)
 - **Recorded:** 2026-10-23
 - **Evidence:** [specs/postgres_connectors.md](../../specs/postgres_connectors.md), decisions 2, 3,
   27 and 31, taken by the maintainer; `src/ingestio/connector/postgres.py`; rationale given by
@@ -15,7 +15,9 @@
   [specs/config_connectors.md](../../specs/config_connectors.md): the library's read and write
   callbacks read the job's configuration file and map the keys of its sections to these
   arguments. Extended on 2026-10-24 to the MongoDB reader by
-  [specs/mongodb_reader.md](../../specs/mongodb_reader.md).
+  [specs/mongodb_reader.md](../../specs/mongodb_reader.md). Amended on 2026-10-24 by
+  [specs/mysql_cdc.md](../../specs/mysql_cdc.md), decisions 2 and 45: the rule that a reader does
+  the filtering inside the source does not hold for `MySQLCDCReader`.
 
 ## Context
 
@@ -39,6 +41,10 @@ the library never imports.
   reach the read or write callback as its arguments, built by the job.
 - A reader extracts only what the job needs, and does the filtering inside the source: a
   watermark filter runs in the system that holds the data, not in the engine that receives it.
+  (Amended on 2026-10-24: `MySQLCDCReader` is the exception to this rule. It filters the events of
+  its table on the Spark driver, after the server has sent every event of the binary log in the
+  range, because the replication protocol has no filter by table. The rule holds for every other
+  reader. See the amendment under Consequences.)
 
 ## Rationale
 
@@ -125,4 +131,19 @@ own configuration and its own secrets.
 - A reader that filters inside the source cannot offer a free-form query, because a custom
   query cannot safely be bounded by a watermark. `MongoDBReader` reserves the connector's
   `aggregation.pipeline` option for this reason.
+- **Amendment of 2026-10-24 ([spec](../../specs/mysql_cdc.md), decisions 2 and 45): a reader does
+  the filtering inside the source, except `MySQLCDCReader`.** The rule that "a reader extracts only
+  what the job needs, and does the filtering inside the source" does not hold for this reader. It
+  reads the table's changes from the server's binary log, and the replication protocol sends the
+  client every event of the binary log in the range, the events of every table included. The
+  server does no filtering by table: the dump request carries no table filter (`binlogstream.py` of
+  `python-mysql-replication` 1.0.17, `__connect_to_stream`). The library that decodes the log
+  filters the events of the reader's table, by database and table name, on the Spark driver, so the
+  other tables' events reach the driver and are discarded there. Each table's reader reads the
+  range again. The technical reason for the exception is the mechanism's: the binary log is what
+  captures deletes, which a watermark read never sees. This cost is a known limitation of the spec.
+  The exception is limited to this reader. The convention is otherwise unchanged: the reader takes
+  `table_name` and `server_id` as constructor arguments named after the configuration keys, and its
+  connection, with the credentials, is a `MySQLConnection` that the job builds. The same reader
+  keeps its read frozen at a bound captured when it starts, as the watermark readers do.
 - Nothing here closes the door to streaming.

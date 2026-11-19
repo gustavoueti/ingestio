@@ -876,6 +876,10 @@ gcs = [
 mysql = [
     { name = "pymysql", extra = ["rsa"] },
 ]
+mysql-cdc = [
+    { name = "mysql-replication" },
+    { name = "pymysql", extra = ["rsa"] },
+]
 postgres = [
     { name = "psycopg", extra = ["binary"] },
 ]
@@ -891,6 +895,7 @@ dev = [
     { name = "google-cloud-bigquery" },
     { name = "google-cloud-storage" },
     { name = "mypy" },
+    { name = "mysql-replication" },
     { name = "pre-commit" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pymysql", extra = ["rsa"] },
@@ -907,10 +912,12 @@ requires-dist = [
     { name = "databricks-sdk", marker = "extra == 'databricks'", specifier = ">=0.20" },
     { name = "google-cloud-bigquery", marker = "extra == 'bigquery'", specifier = ">=3.20" },
     { name = "google-cloud-storage", marker = "extra == 'gcs'", specifier = ">=2.10" },
+    { name = "mysql-replication", marker = "extra == 'mysql-cdc'", specifier = ">=1.0.16" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
     { name = "pymysql", extras = ["rsa"], marker = "extra == 'mysql'", specifier = ">=1.2.0" },
+    { name = "pymysql", extras = ["rsa"], marker = "extra == 'mysql-cdc'", specifier = ">=1.2.0" },
 ]
-provides-extras = ["bigquery", "databricks", "gcs", "mysql", "postgres", "s3"]
+provides-extras = ["bigquery", "databricks", "gcs", "mysql", "mysql-cdc", "postgres", "s3"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -920,6 +927,7 @@ dev = [
     { name = "google-cloud-bigquery", specifier = ">=3.20" },
     { name = "google-cloud-storage", specifier = ">=2.10" },
     { name = "mypy", specifier = ">=1.13" },
+    { name = "mysql-replication", specifier = ">=1.0.16" },
     { name = "pre-commit", specifier = ">=4.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pymysql", extras = ["rsa"], specifier = ">=1.2.0" },
@@ -1135,6 +1143,19 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a2/6e/371856a3fb9d31ca8dac321cda606860fa4548858c0cc45d9d1d4ca2628b/mypy_extensions-1.1.0.tar.gz", hash = "sha256:52e68efc3284861e772bbcd66823fde5ae21fd2fdb51c62a211403730b916558", size = 6343, upload-time = "2025-04-22T14:54:24.164Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/79/7b/2c79738432f5c924bef5071f933bcc9efd0473bac3b4aa584a6f7c1c8df8/mypy_extensions-1.1.0-py3-none-any.whl", hash = "sha256:1be4cccdb0f2482337c4743e60421de3a356cd97508abadd57d47403e94f5505", size = 4963, upload-time = "2025-04-22T14:54:22.983Z" },
+]
+
+[[package]]
+name = "mysql-replication"
+version = "1.0.17"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+    { name = "pymysql" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b2/90/4f1680403239649c1611cc589c9d5d6c93301e928d52fcab212467136734/mysql_replication-1.0.17.tar.gz", hash = "sha256:59384d2d344e44cfdedc05c9089585838afdfd031a3ac514623315fdc7a364f4", size = 76245, upload-time = "2026-08-06T00:37:48.213Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c1/12/faba37ab84b717a390303e21c9fab9462e8347007d60f8b0aebd34de51bd/mysql_replication-1.0.17-py3-none-any.whl", hash = "sha256:280b13bdf290e2a83c355cd20f65a59d37b5df9197ce87f630e8b71d56745a3a", size = 84832, upload-time = "2026-08-06T00:37:47.274Z" },
 ]
 
 [[package]]

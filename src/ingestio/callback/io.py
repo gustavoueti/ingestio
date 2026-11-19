@@ -30,9 +30,12 @@ class ReadSource(Callback):
         into: Key of `Process.state` that receives the payload.
         connection: Where a PostgreSQL, MongoDB or MySQL source lives, with its credentials: a
             `PostgresConnection` for the `postgres` system, a `MongoDBConnection` for the
-            `mongodb` system, a `MySQLConnection` for the `mysql` system. Required by all three.
+            `mongodb` system, a `MySQLConnection` for the `mysql` and `mysql_cdc` systems. Required
+            by all of them.
         client: SDK client of the source, for the systems that take one.
         watermark_value: Last watermark already ingested, for the systems that take one.
+        binlog_position: Binary log position the last run reached, (file, offset), for the
+            systems that take one.
         spark: Session to read with, for the Spark systems. The active session when omitted.
     """
 
@@ -44,6 +47,7 @@ class ReadSource(Callback):
         connection: PostgresConnection | MongoDBConnection | MySQLConnection | None = None,
         client: object | None = None,
         watermark_value: int | Decimal | str | date | None = None,
+        binlog_position: tuple[str, int] | None = None,
         spark: SparkSession | None = None,
     ) -> None:
         self._reader = build_connector(
@@ -53,6 +57,7 @@ class ReadSource(Callback):
                 "connection": connection,
                 "client": client,
                 "watermark_value": watermark_value,
+                "binlog_position": binlog_position,
                 "spark": spark,
             },
         )

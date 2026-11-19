@@ -77,7 +77,7 @@ The column names are yours: ingestio has no opinion about them.
 
 | Callback | Does |
 |---|---|
-| `ReadSource(config, *, into="records", connection=None, client=None, watermark_value=None, spark=None)` | reads the `source` section of the job's configuration file, builds the reader it names, calls its `read()` and stores the payload in `state[into]` |
+| `ReadSource(config, *, into="records", connection=None, client=None, watermark_value=None, binlog_position=None, spark=None)` | reads the `source` section of the job's configuration file, builds the reader it names, calls its `read()` and stores the payload in `state[into]` |
 | `AppendOnly(config, *, key="records", connection=None, client=None)` | reads the `target` section, builds the writer it names and adds `state[key]` to the target, leaving what the target already holds as it is |
 | `FullLoad(config, *, key="records", connection=None, client=None)` | reads the `target` section, builds the writer it names and makes the target hold exactly `state[key]` |
 | `SCD2(config, *, key="records", connection=None, client=None)` | reads the `target` and `scd2` sections, builds the writer and the target's reader, and keeps the history of a dimension as a slowly changing dimension of type 2 with `state[key]` |
@@ -93,24 +93,30 @@ instance: only the connectors the library ships can be named. See
 
 All of them are essential: every error propagates out of the process unchanged.
 
+`binlog_position` is the binary log position the last run reached, `(file, offset)`, for the systems
+that take one: only `mysql_cdc` does. The job keeps it and takes the next one from the events the
+source returned, as it does with `watermark_value`; given, and not `None`, to any other system, it
+raises. Only `ReadSource` takes it.
+
 `connection` is the connection value of the system that needs one. `ReadSource` takes a
 `PostgresConnection` for a `postgres` source, a `MongoDBConnection` for a `mongodb` source and a
-`MySQLConnection` for a `mysql` source: its annotation is
+`MySQLConnection` for a `mysql` or a `mysql_cdc` source: its annotation is
 `PostgresConnection | MongoDBConnection | MySQLConnection | None`. `AppendOnly`, `FullLoad` and
 `SCD2` take a `PostgresConnection` or a `MySQLConnection`: their annotation is
 `PostgresConnection | MySQLConnection | None`, because there is no MongoDB writer. Each callback
 checks the type of `connection` when it is built, and a connection of another system's class raises
 a `ValueError` that names the system and the class ([Configuration](configuration.md#errors)).
 
-`SCD2` is described [below](#scd2). `AppendOnly` and `FullLoad` take the same arguments and subclass `Callback` directly, neither one a
-subclass of the other. Neither takes `replace`, `spark` or `watermark_value`. Each calls the writer
-once, with the very object that `state[key]` holds: `AppendOnly` calls `write(data)` and `FullLoad`
-calls `write(data, replace=True)`, for every system. The callback never copies, converts, iterates,
-counts or type-checks the value, so a generator reaches the writer unconsumed. It leaves the state as
-it found it, and a missing `state[key]` raises `KeyError` when the process runs. What a write does
-to the target is the connector's, as [its section](connectors.md) says: for instance, `AppendOnly`
-adds lines to a `json_lines` file and rows to a table, and `FullLoad` empties the file, truncates the
-table or overwrites the files.
+`SCD2` is described [below](#scd2). `AppendOnly` and `FullLoad` take the same arguments and
+subclass `Callback` directly, neither one a subclass of the other. Neither takes `replace`,
+`spark`, `watermark_value` or `binlog_position`. Each calls the writer once, with the very object
+that `state[key]` holds: `AppendOnly` calls `write(data)` and `FullLoad` calls
+`write(data, replace=True)`, for every system. The callback never copies, converts, iterates,
+counts or type-checks the value, so a generator reaches the writer unconsumed. It leaves the state
+as it found it, and a missing `state[key]` raises `KeyError` when the process runs. What a write
+does to the target is the connector's, as [its section](connectors.md) says: for instance,
+`AppendOnly` adds lines to a `json_lines` file and rows to a table, and `FullLoad` empties the
+file, truncates the table or overwrites the files.
 
 ```python
 import json
