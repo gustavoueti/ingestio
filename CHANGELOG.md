@@ -2,6 +2,15 @@
 
 <!-- version list -->
 
+## v0.9.0 (2026-11-19)
+
+### Features
+
+- **connector**: Add SnowflakeReader and SnowflakeWriter
+  ([#20](https://github.com/gustavoueti/ingestio/pull/20),
+  [`4524813`](https://github.com/gustavoueti/ingestio/commit/4524813359eef4f9cae6fcaaf9946a9fc322f03a))
+
+
 ## v0.8.0 (2026-11-19)
 
 ### Chores

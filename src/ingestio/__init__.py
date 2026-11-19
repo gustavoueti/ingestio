@@ -17,7 +17,7 @@ from ingestio.basics import (
     log_to_console,
 )
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
