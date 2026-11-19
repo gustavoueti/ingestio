@@ -88,8 +88,9 @@ name. The library still reads no secret.
 - `connection`: the connection value of each system that takes one, required by it: a
   [`PostgresConnection`](connectors.md#postgresconnection) for `postgres`, and a
   [`MongoDBConnection`](connectors.md#mongodbconnection) for `mongodb`, and a
-  [`MySQLConnection`](connectors.md#mysqlconnection) for `mysql` and for `mysql_cdc`. The
-  callback checks its type when it is built, see [Errors](#errors).
+  [`MySQLConnection`](connectors.md#mysqlconnection) for `mysql` and for `mysql_cdc`, and a
+  [`SnowflakeConnection`](connectors.md#snowflakeconnection) for `snowflake`. The callback checks
+  its type when it is built, see [Errors](#errors).
 - `client`: the SDK client of the system, for the systems that take one.
 - `watermark_value`: the last watermark already ingested. `ReadSource` only.
 - `binlog_position`: the binary log position the last run reached, `(file, offset)`, a
@@ -106,6 +107,7 @@ name. The library still reads no secret.
 | `mongodb` | source | **required**: a `MongoDBConnection` | no | optional | no | optional |
 | `mysql` | source | **required**: a `MySQLConnection` | no | optional | no | optional |
 | `mysql_cdc` | source | **required**: a `MySQLConnection` | no | no | optional | optional |
+| `snowflake` | source | **required**: a `SnowflakeConnection` | no | optional | no | optional |
 | `s3` | source | no | optional: a boto3 S3 client | optional | no | optional |
 | `gcs` | source | no | optional: a `google.cloud.storage.Client` | optional | no | optional |
 | `volume` | source | no | optional: a `databricks.sdk.WorkspaceClient` | optional | no | optional |
@@ -115,6 +117,7 @@ name. The library still reads no secret.
 | `disk`, `s3`, `gcs`, `volume`, `unity_catalog` | target | no | no | – | – | – |
 | `postgres` | target | **required**: a `PostgresConnection` | no | – | – | – |
 | `mysql` | target | **required**: a `MySQLConnection` | no | – | – | – |
+| `snowflake` | target | **required**: a `SnowflakeConnection` | no | – | – | – |
 | `bigquery` | target | no | optional: a `google.cloud.bigquery.Client` | – | – | – |
 
 - An argument that is `None` is not given, for every system. A job that passes
@@ -141,6 +144,7 @@ can add to it or replace an entry, and it is not exported. A new system is a cha
 | `mongodb` | `MongoDBReader` | not a target | none |
 | `mysql` | `MySQLReader` | `MySQLWriter` | `mysql`, for the writer |
 | `mysql_cdc` | `MySQLCDCReader` | not a target | `mysql-cdc` |
+| `snowflake` | `SnowflakeReader` | `SnowflakeWriter` | none |
 | `s3` | `S3Reader` | `S3Writer` | `s3`, for a reader without `client` |
 | `gcs` | `GcsReader` | `GcsWriter` | `gcs`, for a reader without `client` |
 | `volume` | `VolumeReader` | `VolumeWriter` | `databricks`, for a reader without `client` |
@@ -161,6 +165,8 @@ The keys of a section, besides `system`:
 | `mysql` | source | `table_name` | `watermark_column`, `options` |
 | `mysql` | target | `table_name` | `options` |
 | `mysql_cdc` | source | `table_name`, `server_id` | `options` |
+| `snowflake` | source | `table_name` | `watermark_column`, `options` |
+| `snowflake` | target | `table_name` | `options` |
 | `s3` | source | `path`, `format` | `watermark_pattern`, `schema`, `options` |
 | `s3` | target | `path`, `format` | `options` |
 | `gcs` | source | `path`, `format` | `watermark_pattern`, `schema`, `options` |
@@ -201,7 +207,12 @@ The keys of a section, besides `system`:
 - `mysql` takes `table_name` as `table` or `database.table`; the host, the database of the
   connection, the credentials, the port and `ssl_mode` are never keys, they are the
   `MySQLConnection`. See [MySQL](connectors.md#mysql-mysqlconnection-mysqlreader-mysqlwriter).
-- `SCD2` supports only the `unity_catalog`, `postgres`, `mysql` and `bigquery` targets; see
+- `snowflake` takes `table_name` as `table`, `schema.table` or `database.schema.table`, each part a
+  Snowflake identifier as SQL writes it; the host, the database, the user, the key, the token, the
+  schema, the warehouse and the role are never keys, they are the `SnowflakeConnection`. `schema` in
+  particular is a key of the file systems, a DDL string, and not one of `snowflake`. See
+  [Snowflake](connectors.md#snowflake-snowflakeconnection-snowflakereader-snowflakewriter).
+- `SCD2` supports only the `unity_catalog`, `postgres`, `mysql`, `snowflake` and `bigquery` targets; see
   [Callbacks](callbacks.md#supported-target-systems).
 
 ### JSON types
@@ -292,11 +303,11 @@ Changing the key columns or the tracked columns is an edit of the JSON. One dime
 | a required key is missing | `<path>: <section>.<key> is required for system '<system>'` |
 | a value has the wrong JSON type, or is `null` | `<path>: <section>.<key> must be ...`, as in [JSON types](#json-types) |
 | a callback argument that the system does not take is given | `<path>: <section> system '<system>' takes no argument <name>` |
-| `connection` is missing for `postgres`, `mongodb`, `mysql` or `mysql_cdc` | `<path>: <section> system '<system>' needs the argument connection` |
-| `connection` is not an instance of the system's connection class (`PostgresConnection` for `postgres`, `MongoDBConnection` for `mongodb`, `MySQLConnection` for `mysql` and `mysql_cdc`); a subclass is accepted | `<path>: <section> system '<system>' needs a <class> as the argument connection, not <type name>` |
+| `connection` is missing for `postgres`, `mongodb`, `mysql`, `mysql_cdc` or `snowflake` | `<path>: <section> system '<system>' needs the argument connection` |
+| `connection` is not an instance of the system's connection class (`PostgresConnection` for `postgres`, `MongoDBConnection` for `mongodb`, `MySQLConnection` for `mysql` and `mysql_cdc`, `SnowflakeConnection` for `snowflake`); a subclass is accepted | `<path>: <section> system '<system>' needs a <class> as the argument connection, not <type name>` |
 | the connector rejects a value, such as `table_name: "orders"` for `unity_catalog` | the connector's `ValueError`, the same object, with one note |
 | the system's extra is not installed | the connector's `ImportError`, the same object, with one note |
-| `SCD2` only: `target.system` is not `bigquery`, `mysql`, `postgres` or `unity_catalog` | `<path>: target.system '<name>' is not one of: bigquery, mysql, postgres, unity_catalog` |
+| `SCD2` only: `target.system` is not `bigquery`, `mysql`, `postgres`, `snowflake` or `unity_catalog` | `<path>: target.system '<name>' is not one of: bigquery, mysql, postgres, snowflake, unity_catalog` |
 | `SCD2` only: the `scd2` section is missing | `<path>: missing section 'scd2'` |
 | `SCD2` only: it is not an object | `<path>: section 'scd2' must be a JSON object` |
 | `SCD2` only: a key not in the table | `<path>: scd2.<key> is not a key of section 'scd2'` |
@@ -310,10 +321,11 @@ Changing the key columns or the tracked columns is an edit of the JSON. One dime
 | `state[key]` is missing | `KeyError`, whose `args` are `(key,)`, when the process runs; the writer is not called |
 
 - `<names>` are the names valid for the section, sorted and separated by `, `: for a source
-  `bigquery, disk, gcs, json_api, mongodb, mysql, mysql_cdc, postgres, s3, unity_catalog, volume`,
-  for a target `bigquery, disk, gcs, json_lines, mysql, postgres, s3, unity_catalog, volume`.
-- `<class>` is `MongoDBConnection` for `mongodb`, `MySQLConnection` for `mysql` and `mysql_cdc`, and
-  `PostgresConnection` for `postgres`, and
+  `bigquery, disk, gcs, json_api, mongodb, mysql, mysql_cdc, postgres, s3, snowflake, unity_catalog, volume`,
+  for a target
+  `bigquery, disk, gcs, json_lines, mysql, postgres, s3, snowflake, unity_catalog, volume`.
+- `<class>` is `MongoDBConnection` for `mongodb`, `MySQLConnection` for `mysql` and `mysql_cdc`,
+  `PostgresConnection` for `postgres` and `SnowflakeConnection` for `snowflake`, and
   `<type name>` is `type(connection).__name__`. So a `MongoDBConnection` given to a `postgres`
   source raises `<path>: source system 'postgres' needs a PostgresConnection as the argument
   connection, not MongoDBConnection`. `ReadSource`, `AppendOnly`, `FullLoad` and `SCD2` all make
@@ -343,9 +355,10 @@ extra is not installed raises, when the callback is built, the `ImportError` tha
 raises, which names the extra: `PostgresWriter needs psycopg: pip install 'ingestio[postgres]'`.
 It follows the connector's rule of needing the package only when it would import it: an `s3`, `gcs`
 or `volume` source given a `client` needs no extra, and a `bigquery` source without
-`watermark_column` needs none either, and neither does a `mongodb` or a `mysql` source. A `mysql`
-target needs the `mysql` extra, and a `mysql_cdc` source always needs the `mysql-cdc` extra. So
-changing a job's system is an edit of its JSON and, when the new
+`watermark_column` needs none either, and neither does a `mongodb`, a `mysql` or a `snowflake`
+source, nor a `snowflake` target: the Snowflake connectors have no extra. A `mysql` target needs the
+`mysql` extra, and a `mysql_cdc` source always needs the `mysql-cdc` extra. So changing a job's
+system is an edit of its JSON and, when the new
 system needs an extra, of its install.
 
 ## Example

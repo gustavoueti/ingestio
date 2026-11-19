@@ -51,7 +51,9 @@ from ingestio.connector.all import (
 
 DAY = timedelta(days=1)
 API = "https://api.example.com/v1/orders"
-TARGET_NAMES = "bigquery, disk, gcs, json_lines, mysql, postgres, s3, unity_catalog, volume"
+TARGET_NAMES = (
+    "bigquery, disk, gcs, json_lines, mysql, postgres, s3, snowflake, unity_catalog, volume"
+)
 STAGING_NAME = re.compile(r"ingestio_staging_[0-9a-f]{32}")
 COLUMNS = ("id", "payload")
 OPTIONS_TYPE = "must be an object of strings, numbers and booleans"

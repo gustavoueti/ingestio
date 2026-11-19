@@ -58,7 +58,8 @@ GCS_SOURCE = "gs://acme-landing/orders"
 DISK_PATTERN = r"orders_(\d{8})\.csv"
 GCS_PATTERN = r"orders_(\d{8})\.json"
 SOURCE_NAMES = (
-    "bigquery, disk, gcs, json_api, mongodb, mysql, mysql_cdc, postgres, s3, unity_catalog, volume"
+    "bigquery, disk, gcs, json_api, mongodb, mysql, mysql_cdc, postgres, s3, snowflake, "
+    "unity_catalog, volume"
 )
 COLUMNS = ("id", "payload")
 BOUND_ROW = ("2026-10-21 09:30:00+00", "timestamp")

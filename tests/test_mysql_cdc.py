@@ -146,10 +146,13 @@ DEFAULT_SOURCE: dict[str, object] = {
     "server_id": 4001,
 }
 SOURCE_NAMES = (
-    "bigquery, disk, gcs, json_api, mongodb, mysql, mysql_cdc, postgres, s3, unity_catalog, volume"
+    "bigquery, disk, gcs, json_api, mongodb, mysql, mysql_cdc, postgres, s3, snowflake, "
+    "unity_catalog, volume"
 )
-TARGET_NAMES = "bigquery, disk, gcs, json_lines, mysql, postgres, s3, unity_catalog, volume"
-SCD2_NAMES = "bigquery, mysql, postgres, unity_catalog"
+TARGET_NAMES = (
+    "bigquery, disk, gcs, json_lines, mysql, postgres, s3, snowflake, unity_catalog, volume"
+)
+SCD2_NAMES = "bigquery, mysql, postgres, snowflake, unity_catalog"
 SCD2_SECTION: dict[str, object] = {"key_columns": ["id"], "effective_time_column": "updated_at"}
 CDC_TARGET: dict[str, object] = {"system": "mysql_cdc", "table_name": "shop.orders"}
 RESERVED_KEYS = (

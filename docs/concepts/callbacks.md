@@ -99,11 +99,14 @@ source returned, as it does with `watermark_value`; given, and not `None`, to an
 raises. Only `ReadSource` takes it.
 
 `connection` is the connection value of the system that needs one. `ReadSource` takes a
-`PostgresConnection` for a `postgres` source, a `MongoDBConnection` for a `mongodb` source and a
-`MySQLConnection` for a `mysql` or a `mysql_cdc` source: its annotation is
-`PostgresConnection | MongoDBConnection | MySQLConnection | None`. `AppendOnly`, `FullLoad` and
-`SCD2` take a `PostgresConnection` or a `MySQLConnection`: their annotation is
-`PostgresConnection | MySQLConnection | None`, because there is no MongoDB writer. Each callback
+`PostgresConnection` for a `postgres` source, a `MongoDBConnection` for a `mongodb` source, a
+`MySQLConnection` for a `mysql` or a `mysql_cdc` source and a `SnowflakeConnection` for a
+`snowflake` source: its annotation is
+`PostgresConnection | MongoDBConnection | MySQLConnection | SnowflakeConnection | None`.
+`AppendOnly`, `FullLoad` and `SCD2` take a `PostgresConnection`, a `MySQLConnection` or a
+`SnowflakeConnection`: their annotation is
+`PostgresConnection | MySQLConnection | SnowflakeConnection | None`, because there is no MongoDB
+writer. Each callback
 checks the type of `connection` when it is built, and a connection of another system's class raises
 a `ValueError` that names the system and the class ([Configuration](configuration.md#errors)).
 
@@ -269,17 +272,18 @@ missing target included, propagates as the reader's own error, unchanged, and so
 
 ### Supported target systems
 
-`SCD2` supports `unity_catalog`, `postgres`, `mysql` and `bigquery`, the systems whose
+`SCD2` supports `unity_catalog`, `postgres`, `mysql`, `snowflake` and `bigquery`, the systems whose
 `write(data, replace=True)` is atomic and stays correct when the DataFrame written reads the same
 target. Any other system raises when the callback is built, with the configuration's own message
 and the narrowed list:
-`<path>: target.system 'disk' is not one of: bigquery, mysql, postgres, unity_catalog`.
+`<path>: target.system 'disk' is not one of: bigquery, mysql, postgres, snowflake, unity_catalog`.
 
 | `system` | Reader of the target | Arguments | Write |
 |---|---|---|---|
 | `unity_catalog` | `UnityCatalogReader` | none | one Delta commit |
 | `postgres` | `PostgresReader` | `connection`, required | staging table, then one transaction |
 | `mysql` | `MySQLReader` | `connection`, required: a `MySQLConnection` | staging table, then one transaction that deletes every row and inserts the batch's |
+| `snowflake` | `SnowflakeReader` | `connection`, required: a `SnowflakeConnection` | the connector stages the batch, then one transaction that truncates the table and copies the batch in |
 | `bigquery` | `BigQueryReader` | `client`, optional | staging table, then one `MERGE` |
 
 The reader is built when the process runs, from the `target` section's `table_name` (and
@@ -345,7 +349,7 @@ with tempfile.TemporaryDirectory() as tmp:
     try:
         SCD2(config)
     except ValueError as error:
-        # ... target.system 'disk' is not one of: bigquery, mysql, postgres, unity_catalog
+        # ... target.system 'disk' is not one of: bigquery, mysql, postgres, snowflake, unity_catalog
         print(error)
 
     job["target"] = {"system": "unity_catalog", "table_name": "main.gold.dim_customer"}
@@ -363,7 +367,9 @@ with tempfile.TemporaryDirectory() as tmp:
   batch. On `postgres`, `TRUNCATE` holds an exclusive lock on the dimension while the transaction
   applies, and fails when a foreign key references it. On `mysql`, the transaction deletes every row
   and inserts every row, which is slow on a large dimension, and the `DELETE` fires the dimension's
-  triggers and the `ON DELETE` actions of the foreign keys that reference it. On `bigquery`, the
+  triggers and the `ON DELETE` actions of the foreign keys that reference it. On `snowflake`, the
+  transaction truncates the table and copies every row, and the `TRUNCATE` deletes the table's load
+  metadata. On `bigquery`, the
   `MERGE` is billed over the whole table. On `unity_catalog`, every run is a new version of the
   table that rewrites every file, kept until `VACUUM`.
 - **The batch and the target are each evaluated twice,** once by the checks and once by the write.

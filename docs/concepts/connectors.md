@@ -13,7 +13,8 @@ mappings that the connector would have to choose. `UnityCatalogWriter` creates a
 Delta table, because its columns and types are the DataFrame's. Delta is that system's native
 table format, so always writing Delta is not the connector choosing a format. The rule is a
 permission, not a requirement: `BigQueryWriter` creates nothing either, and a missing target fails,
-because the writer runs no DDL on the target.
+because the writer runs no DDL on the target. So does `SnowflakeWriter`, which also keeps the
+Snowflake connector from creating a missing target itself.
 
 ## Capabilities
 
@@ -2774,6 +2775,480 @@ Each action on a snapshot's DataFrame reads the table again, this `first()` incl
 - Several tables in one reader, GTID positions, continuous or blocking reads, MariaDB, and applying
   the events are not covered.
 
+### Snowflake: `SnowflakeConnection`, `SnowflakeReader`, `SnowflakeWriter`
+
+```python
+from ingestio.connector.all import SnowflakeConnection, SnowflakeReader, SnowflakeWriter
+```
+
+These three classes are exported by `ingestio.connector.all` only, not by `ingestio`. They are built
+on the Snowflake Connector for Spark (format `snowflake`), so they run distributed on a cluster: the
+reader returns a `pyspark.sql.DataFrame`, and the writer receives one. Both need a Spark runtime
+with the connector's JAR and the Snowflake JDBC driver, and neither needs an extra: the connectors
+import no Python package besides pyspark. See [Supported
+environments](#environments-of-the-snowflake-connectors).
+
+`SnowflakeReader` satisfies `Reader[DataFrame]` and `SnowflakeWriter` satisfies `Writer[DataFrame]`,
+structurally.
+
+In a configuration: `"system": "snowflake"`, in the `source` section with the keys `table_name`
+(required), `watermark_column` and `options`, and in the `target` section with `table_name`
+(required) and `options`. `ReadSource`, `AppendOnly`, `FullLoad` and `SCD2` all need the argument
+`connection`, a `SnowflakeConnection` that the job builds; `ReadSource` also takes `watermark_value`
+and `spark`. The host, the database, the user, the key, the token, the schema, the warehouse and the
+role are never keys. `snowflake` is also a target of `SCD2`. The connectors follow the convention of
+[How a connector receives an ingestion's
+parameters](#how-a-connector-receives-an-ingestions-parameters).
+
+#### `SnowflakeConnection`
+
+```text
+SnowflakeConnection(
+    host: str, database: str,
+    *, user: str | None = None, private_key: str | None = None,
+    oauth_token: str | None = None, schema: str | None = None,
+    warehouse: str | None = None, role: str | None = None,
+)
+```
+
+Where and how to reach one Snowflake database. Like `MySQLConnection`, it is a value, not a third
+concept: it opens nothing, imports nothing outside the standard library, is immutable, and its
+arguments are readable as attributes of the same names, `private_key` as given. `host` and
+`database` are positional; every other argument is keyword-only.
+
+- `host` is the account's host name, such as `myorg-myaccount.snowflakecomputing.com`. It is not
+  always `<orgname>-<account_name>.snowflakecomputing.com`: the connector takes whatever host name
+  the account has.
+- `database` is the session's database. `schema`, `warehouse` and `role` are optional; when left out
+  the connector's default (`public` for the schema) or the user's default applies.
+- **Two ways to sign in, and exactly one is given.** `private_key`, an unencrypted PKCS#8 private
+  key, with its `user`; or `oauth_token`, an OAuth access token, with an optional `user`, whose user
+  the token names. Password sign-in, programmatic access tokens, encrypted keys, OAuth client
+  credentials, workload identity, and browser or multi-factor sign-in are not supported. A job
+  reads its key or its token from its own secret store; the library never reads a secret.
+
+Invalid settings raise `ValueError` when the connection is built, the first that fails:
+
+| Argument | Rule | Message |
+|---|---|---|
+| `host` | not empty | `host must not be empty` |
+| `database` | not empty | `database must not be empty` |
+| `user` | `None` or not empty | `user must not be empty` |
+| `schema` | `None` or not empty | `schema must not be empty` |
+| `warehouse` | `None` or not empty | `warehouse must not be empty` |
+| `role` | `None` or not empty | `role must not be empty` |
+| `private_key`, `oauth_token` | at least one given | `give private_key or oauth_token` |
+| `private_key`, `oauth_token` | not both given | `give private_key or oauth_token, not both` |
+| `oauth_token` | not empty | `oauth_token must not be empty` |
+| `private_key` | `user` given | `private_key needs user` |
+| `private_key` | the form below | the messages below |
+
+**The key text.** `private_key` is the key as PEM text, or its base64 body, either of them with
+whitespace around or inside it. With the PEM form the first line must be exactly
+`-----BEGIN PRIVATE KEY-----` and the last exactly `-----END PRIVATE KEY-----`, the lines being
+split as Python's `str.splitlines()` splits them, so that `\r\n` ends a line too. The body, with
+every whitespace character removed, must be non-empty base64. The connector receives the body
+without whitespace, never the armour lines. Whether the key is an RSA key is not checked:
+the connector fails when it connects. The messages never hold the key or any part of it:
+
+| Case | Message |
+|---|---|
+| a PEM `BEGIN ENCRYPTED PRIVATE KEY` | `private_key must be unencrypted` |
+| a PEM `BEGIN RSA PRIVATE KEY` | `private_key must be PKCS#8 (BEGIN PRIVATE KEY), not PKCS#1 (BEGIN RSA PRIVATE KEY)` |
+| any other PEM first line, a missing or different last line, an empty body, a body that is not base64 | `private_key must be an unencrypted PKCS#8 key, as PEM text or its base64 body` |
+
+A key protected by a passphrase is decrypted by the job, for example with the `cryptography`
+package, before it builds the connection.
+
+**What every load and save carries.** The connection turns into the connector's options, sent as
+given:
+
+| Option | Value | Sent |
+|---|---|---|
+| `sfURL` | `host` | always |
+| `sfDatabase` | `database` | always |
+| `sfSchema`, `sfWarehouse`, `sfRole`, `sfUser` | the argument of the same name | when given |
+| `pem_private_key` | the key's body | with `private_key` |
+| `sfAuthenticator` and `sfToken` | `oauth` and `oauth_token` | with `oauth_token` |
+
+`repr` and `str` show what identifies the database or the table, and never the key or the token:
+
+```text
+SnowflakeConnection(host='acme-shop.snowflakecomputing.com', database='shop', schema=None, warehouse=None, role=None, user='ingest')
+SnowflakeReader(table_name='shop.public.orders', host='acme-shop.snowflakecomputing.com', database='shop')
+SnowflakeWriter(table_name='shop.public.orders', host='acme-shop.snowflakecomputing.com', database='shop')
+```
+
+#### Table and column names
+
+`table_name`, on the reader and on the writer, has one, two or three parts separated by `.`:
+`table`, `schema.table` or `database.schema.table`. A part left out resolves to the session's
+database and schema, the connection's. **Each part is a Snowflake identifier as SQL writes it**:
+unquoted, such as `orders` or `_t$1` (a letter or `_`, then letters, digits, `_` and `$`), or
+quoted, such as `"Mixed Case"` or `"O""Brien"` (a `"` inside is written `""`; a `.` inside a quoted
+part belongs to the name). Anything else raises
+`ValueError("table_name must be 'table', 'schema.table' or 'database.schema.table', each part a Snowflake identifier")`
+when the connector is built; so does a text in parentheses, which the Snowflake connector would read
+as a query. `watermark_column` is one identifier in the same two forms: an empty one raises
+`ValueError("watermark_column must not be empty")`, and any other text raises
+`ValueError("watermark_column must be a Snowflake identifier")`.
+
+**The connectors write every name as given**: they never quote, unquote or change the case of a
+name. Snowflake folds an unquoted part to upper case and keeps a quoted one as written, so
+`shop.public.orders` names `SHOP.PUBLIC.ORDERS`, and `"Shop".public."Orders"` names a database
+and a table created with quoted mixed-case names. Neither form can hold a character that ends the
+identifier outside its quotes, so no other text reaches the SQL through a name. A column named
+like a reserved word, such as `order`, is written `"ORDER"`. The writer writes no column name
+itself: the Snowflake connector maps the DataFrame's columns to the target's by name.
+
+A read returns the columns as Snowflake names them: an unquoted column comes back in upper case,
+such as `UPDATED_AT`. Spark resolves column names ignoring case unless the session sets
+`spark.sql.caseSensitive`.
+
+#### `SnowflakeReader`
+
+```text
+SnowflakeReader(
+    table_name: str, connection: SnowflakeConnection,
+    *, watermark_column: str | None = None,
+    watermark_value: int | Decimal | str | date | None = None,
+    options: Mapping[str, str | int | float | bool] | None = None,
+    spark: SparkSession | None = None,
+)
+```
+
+`read()` returns a Spark DataFrame built with `spark.read.format("snowflake")`. The rows move when
+an action runs on it. Building the reader touches neither Spark nor Snowflake.
+
+- **Session.** `spark` when given. Otherwise `SparkSession.active()`, looked up when `read()` is
+  called, never when the reader is built. The reader never creates a session.
+- **Full read** (no `watermark_column`): one load of the table, as given. Every action on the
+  DataFrame queries the table again.
+- **Watermark read** (`watermark_column` given): only the rows with a watermark above
+  `watermark_value` (all of them when it is `None`) are read, and the filter is in the SQL that
+  Snowflake runs, so it does not depend on the connector's `autopushdown`. `read()` runs up to two
+  loads before the one it returns:
+  1. **The type.** `SELECT <col> FROM <table> WHERE FALSE`. The reader reads the schema of the
+     DataFrame once and runs no action on it; the type of its first field is the watermark type.
+  2. **The bound.** `SELECT <render> AS UPPER_BOUND FROM <table>`, followed by
+     `WHERE <col> > <value>` when a value is given, where `<render>` is
+     `TO_VARCHAR(MAX(<col>), 'YYYY-MM-DD')` for a date,
+     `TO_VARCHAR(MAX(<col>), 'YYYY-MM-DD"T"HH24:MI:SS.FF9TZH:TZM')` for a timestamp and
+     `TO_VARCHAR(MAX(<col>))` for any other type. The reader runs `first()` once: the bound is the
+     highest watermark of the slice as Snowflake's text, or `None` when no row qualifies.
+  3. **The data.** `SELECT * FROM <table> WHERE <col> > <value> AND <col> <= <bound>` (without the
+     first comparison when no value is given), or `WHERE FALSE` when the bound is `None`. `read()`
+     returns this DataFrame unchanged, with no Spark-side filter.
+
+  The consequences are those of `PostgresReader` and `MySQLReader`:
+  - every action on the DataFrame reads the same range. Rows that arrive after `read()` with a
+    higher watermark are left for the next run, so a watermark that the job computes from the
+    DataFrame never goes past what the DataFrame holds;
+  - the comparison is strictly greater, and rows whose watermark is `NULL` are never read, the first
+    run included;
+  - a watermark read is three queries, one of which returns no row, each on the session's warehouse.
+- The reader decides no strategy. Whether a run is incremental, from which value, and how the next
+  watermark is computed and kept, belong to the job. The bound that `read()` captured is not
+  exposed.
+
+The reader raises `ValueError` when it is built, the first that fails, in this order:
+
+| Case | Message |
+|---|---|
+| `table_name` is not an identifier of the forms above | `table_name must be 'table', 'schema.table' or 'database.schema.table', each part a Snowflake identifier` |
+| `watermark_column == ""` | `watermark_column must not be empty` |
+| `watermark_column` is not an identifier | `watermark_column must be a Snowflake identifier` |
+| `watermark_value` without `watermark_column` | `watermark_value needs watermark_column` |
+| `bool`, `float` or any other type | `unsupported watermark_value type: <type name>` |
+| a `Decimal` that is NaN or infinite | `watermark_value must be finite` |
+| a naive `datetime` | `watermark_value must be timezone-aware` |
+| a reserved key in `options` | `option '<key>' is set by the connector` |
+
+A job that takes the watermark from a Delta table gets naive datetimes from `collect()`: attach the
+zone, or pass a string.
+
+#### Literals
+
+A value never reaches the SQL as typed. `Q(t)` is the single-quoted text `t` with every `\` written
+`\\` and every `'` written `''`: `Q("O'Brien")` is `'O''Brien'`, `Q(r"C:\temp")` is `'C:\\temp'` and
+`Q("")` is `''`.
+
+| Type of `watermark_value` | Literal |
+|---|---|
+| `int`, but not `bool` | `str(value)`, unquoted: `41` |
+| finite `decimal.Decimal` | `format(value, "f")`, unquoted: `12.50` |
+| `str` | `Q(value)` |
+| timezone-aware `datetime.datetime` | `Q(value.astimezone(UTC).isoformat())`: `'2026-10-01T11:30:00.123456+00:00'` |
+| `datetime.date` | `Q(value.isoformat())`: `'2026-10-01'` |
+
+`0` and `""` are values. Give the value the kind of the column: an `int` for an integer `NUMBER`, a
+`Decimal` for a `NUMBER` with a scale, a `str` for a text column, a `date` for a `DATE`, an aware
+`datetime` for a `TIMESTAMP_*` column. Snowflake converts a string compared with a `DATE` or
+`TIMESTAMP_*` column to the column's type. A `TIMESTAMP_NTZ` column that holds wall-clock time in
+another zone takes its value as a `str`, which is sent as it is.
+
+**The bound** is Snowflake's own text of the highest watermark, never converted. It is written
+unquoted when Spark types the watermark column as numeric and the whole text is a number
+(`[+-]?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?`), so that a `NUMBER` key above 2^53 is compared exactly;
+otherwise it is `Q(<text>)`. No text that Snowflake returns reaches the SQL unquoted unless it is a
+number. A timestamp bound carries nine fractional digits and its offset, whatever the output formats
+of the session.
+
+#### Time zones
+
+The connectors set no `sfTimezone`. The Snowflake connector then sets the session's zone to the
+JVM's default zone before each load and save, and a user's `sfTimezone` passes through. The literal
+of an aware datetime carries its offset (`+00:00`) and the bound carries its own, so neither
+depends on the session's zone, and a repeated hour in that zone makes no literal ambiguous. An
+aware datetime compares with a `TIMESTAMP_LTZ` or `TIMESTAMP_TZ` column as the same instant; a
+`TIMESTAMP_NTZ` column ignores the offset and compares it on the UTC wall clock, as `PostgresReader`
+compares a `timestamp without time zone` column. How the values that the connector moves in and out
+of Spark follow the session's zone is the connector's own handling, which the connectors do not
+change; what a user's `sfTimezone` does to them is not established.
+
+#### Options
+
+`options` holds options of the Snowflake Connector for Spark, passed through, such as
+`autopushdown`, `sfTimezone`, `sfCompress`, `parallelism`, `keep_column_case`,
+`column_mismatch_behavior` or `continue_on_error`. Option names are case-insensitive, and values are
+passed as given: Spark turns them into strings, and booleans into `true` and `false`.
+
+**Reserved keys**, in any case. Giving one raises
+`ValueError("option '<key>' is set by the connector")` when the connector is built, with the key as
+given. No user option can replace one of the connector's.
+
+| Reserved on | Keys | Why |
+|---|---|---|
+| both | `sfURL`, `sfDatabase`, `sfSchema`, `sfWarehouse`, `sfRole`, `sfUser`, `sfPassword`, `pem_private_key`, `sfAuthenticator`, `sfToken`, `sfaccount`, `sfworkloadidentityprovider`, `oauthclientid`, `oauthclientsecret`, `oauthtokenrequesturl`, `oauthscope`, `connection_id` | they say where the session goes and who signs in, which the connection holds; a password, OAuth client credentials or workload identity would replace or outrank the connection's credential, and `connection_id` skips the connector's checks of the URL and the authentication |
+| both | `dbtable`, `query` | set from `table_name` and the watermark |
+| the writer | `usestagingtable`, `truncate_table` | they route the connector to its transaction |
+| the writer | `column_mapping`, `columnmap` | the writer maps columns by name, which makes a missing target fail; a `columnmap` would skip the lookup that makes it fail |
+| the writer | `preactions`, `postactions` | the writer sets `preactions` for a replace, and a DDL statement in an action would commit the transaction |
+| the writer | `internal_skip_write_when_writing_empty_dataframe` | when true, the connector skips its transaction for an empty DataFrame, so a replace would leave the target unchanged |
+
+Every other key passes through. On the reader, the writer's reserved keys pass through too:
+`preactions` and `postactions` reach the connector as given. `column_mismatch_behavior=ignore`
+leaves out the columns that do not match, and `continue_on_error=on` lets the `COPY` skip rows it
+cannot load, both committed with the rest: a job that passes them chooses that.
+
+#### `SnowflakeWriter`
+
+```text
+SnowflakeWriter(
+    table_name: str, connection: SnowflakeConnection,
+    *, options: Mapping[str, str | int | float | bool] | None = None,
+)
+
+SnowflakeWriter.write(data: DataFrame, *, replace: bool = False) -> None
+```
+
+Writes a Spark DataFrame into a table that already exists, atomically, through the Snowflake
+connector's own transaction. There is no Python client on the driver and no extra.
+
+- `write(data)` appends: it inserts every row of `data` and leaves the existing rows alone.
+- `write(data, replace=True)` deletes every row of the target and then inserts every row of `data`,
+  in the same transaction, so the target ends up holding exactly the rows of `data`.
+- The calling callback chooses at call time, by passing `replace`. The connector's configuration has
+  no mode and there is no `replace()` method. `AppendOnly` calls `write(data)`, and `FullLoad` and
+  `SCD2` call `write(data, replace=True)`.
+
+**How a write happens.** The writer saves the DataFrame once, in the connector's append mode for
+both operations, with `usestagingtable=off`, `truncate_table=on` and `column_mapping=name`, and,
+on a replace, `preactions=TRUNCATE TABLE %s`. That routes the Snowflake connector to its
+transactional path:
+
+1. **Columns and the target.** At the start of the save the connector reads the target's columns
+   with a query that returns no row, and maps the DataFrame's columns to them by name, in any order,
+   ignoring case. A missing target fails here, before any upload and any DDL.
+2. **Stage.** A temporary stage is created and the DataFrame's files are uploaded to it, before any
+   statement on the target.
+3. **Transaction.** The connector begins a transaction, runs `TRUNCATE TABLE <table_name>` on a
+   replace, then `COPY INTO <table_name>` from the stage, then commits. On any failure it rolls
+   back, the `TRUNCATE` included.
+
+`TRUNCATE` is DML in Snowflake, so the truncation and the load commit together or not at all: other
+sessions see none of the new rows until the commit, and with `replace=True` keep seeing the old rows
+until then. After a failure at any step, the target is as it was.
+
+**Exactly the target's columns.** With the default `column_mismatch_behavior`, the DataFrame must
+hold exactly the target's columns: a different number of columns, a DataFrame column that the target
+lacks, or two columns that differ only in case fail with the connector's
+`UnsupportedOperationException`, unlike `MySQLWriter`, which accepts a subset. With
+`column_mismatch_behavior=ignore` the unmatched columns are left out, and a target column left out
+takes its default, or `NULL`.
+
+**A missing target fails.** The writer runs no DDL on the target and never creates it: a missing
+target fails before any statement touches it (see [ADR
+0014](../decisions/0014-create-a-missing-target-only-when-derived-from-the-data.md)). Creating a
+Snowflake table from a DataFrame needs a type mapping that the connector would have to choose. The
+temporary stage is the Snowflake connector's own mechanism, not the target.
+
+**Failures.** Nothing is swallowed: every error propagates out of `write()`, the same object, with
+no note.
+
+- A DataFrame without columns raises `ValueError("the DataFrame has no columns")` and does nothing
+  else.
+- A failure of the save, at any point (a missing target, columns that do not match, a failed upload,
+  `TRUNCATE`, `COPY` or commit), propagates unchanged, and the connector rolled back whatever its
+  transaction had done. The writer has nothing to clean up: it creates nothing, and the temporary
+  stage belongs to the connector's session.
+
+The writer reads only `data.columns` and `data.write`, saves once and never counts or inspects rows.
+An empty DataFrame goes through the same save: an append inserts nothing, and with `replace=True`
+the connector still runs its transaction and the `TRUNCATE`, so the target ends up empty. The
+writer looks up no Spark session and imports nothing. The connectors write no log lines.
+
+#### Example
+
+This runs as written, because building the objects opens nothing. Reading and writing need a Spark
+session with the Snowflake connector and a Snowflake account.
+
+```python
+import base64
+from datetime import UTC, datetime
+
+from ingestio.connector.all import SnowflakeConnection, SnowflakeReader, SnowflakeWriter
+
+# A stand-in for the base64 body of an unencrypted PKCS#8 key: a job reads the real one from its
+# secret store.
+key = base64.b64encode(bytes(range(100))).decode()
+
+shop = SnowflakeConnection(
+    "acme-shop.snowflakecomputing.com",
+    "shop",
+    user="ingest",
+    private_key=key,
+    warehouse="ingest_wh",
+)
+reader = SnowflakeReader(
+    "shop.public.orders",
+    shop,
+    watermark_column="updated_at",
+    watermark_value=datetime(2026, 10, 1, tzinfo=UTC),
+)
+writer = SnowflakeWriter("reporting.public.daily_sales", shop)
+print(shop)
+print(reader)
+print(writer)
+
+try:
+    SnowflakeConnection("acme-shop.snowflakecomputing.com", "shop", user="ingest")
+except ValueError as error:
+    print(error)
+
+try:
+    SnowflakeConnection("acme-shop.snowflakecomputing.com", "shop", private_key=key)
+except ValueError as error:
+    print(error)
+
+try:
+    SnowflakeReader("shop.public.orders", shop, options={"dbtable": "other"})
+except ValueError as error:
+    print(error)
+```
+
+A job on Databricks: the file names the tables, the secrets stay in the job. `orders.json`:
+
+```json
+{
+  "source": {"system": "snowflake", "table_name": "shop.public.orders", "watermark_column": "updated_at"},
+  "target": {"system": "unity_catalog", "table_name": "main.bronze.orders"}
+}
+```
+
+<!-- example: skip -->
+```python
+from ingestio import AppendOnly, Process, ReadSource, Step
+from ingestio.connector.all import SnowflakeConnection
+
+shop = SnowflakeConnection(
+    "myorg-myaccount.snowflakecomputing.com",
+    "shop",
+    user="ingest",
+    private_key=dbutils.secrets.get("snowflake", "private_key"),  # the job reads its secrets
+    warehouse="ingest_wh",
+)
+
+Process([
+    Step("extract", [ReadSource("orders.json", connection=shop, watermark_value=last_watermark())]),
+    Step("load", [AppendOnly("orders.json")]),
+]).run()
+```
+
+A full load into Snowflake, from a file whose `target` is
+`{"system": "snowflake", "table_name": "reporting.public.daily_sales"}`, places
+`FullLoad("daily_sales.json", connection=shop)` instead of `AppendOnly`. A job that signs in with
+OAuth builds `SnowflakeConnection(host, "shop", oauth_token=<token>)`.
+
+#### Environments of the Snowflake connectors
+
+- **pyspark** 3.5 or later, a prerequisite that the runtime provides.
+- **The Snowflake Connector for Spark** from 3.2.1, with the **Snowflake JDBC driver** from 4.0.2,
+  which connector 3.2.0 and later require, both on the session's classpath, prerequisite JARs, for
+  example through
+  `spark.jars.packages=net.snowflake:spark-snowflake_<Scala version>:<version>,net.snowflake:snowflake-jdbc:<version>`.
+  The connectors check no version at run time. No extra installs them.
+- **Spark** 3.5, 4.0 and 4.1. Spark 4.2: no claim.
+- **Databricks classic compute** on Databricks Runtime 15.4 LTS or later, in dedicated access mode.
+  Databricks Runtime 17.3 LTS and 18 ship neither the connector nor the Snowflake JDBC driver: the
+  job installs both as cluster libraries, prerequisites that the library never installs. What the
+  other runtimes ship was not checked. Standard access mode, serverless compute and Databricks
+  Connect: no claim. Only the DataFrame API is used.
+- **Open-source Spark** 3.5 or later, on a Java release that Spark version supports, with both JARs
+  on the classpath.
+- **Snowflake**: any account the connector reaches; the connectors add no requirement of their own.
+- **Network.** The driver and the executors reach the account, and the stage the connector uses.
+
+**Privileges**, as far as is known and not verified: `USAGE` on the warehouse, the database and the
+schema; `SELECT` on a source table; `INSERT` on a target, and what `TRUNCATE` needs for
+`replace=True`; `CREATE STAGE` on the session's schema, for the connector's temporary stage.
+
+#### Limitations of the Snowflake connectors
+
+- **Late commits.** A row committed after a read, with a watermark at or below the bound that read
+  captured, is never read by a later run. Rows that share the exact value of the previous watermark
+  but commit later are missed the same way.
+- **Full reads are not frozen.** Every action on a full read's DataFrame runs the query again.
+- **Nanoseconds.** Spark holds timestamps to the microsecond. A `TIMESTAMP_*` column whose values
+  carry nanoseconds gives the job a watermark, computed from the DataFrame, below the rows it read,
+  and the next run reads them again. The bound itself keeps the nanoseconds.
+- **Three queries per watermark read**, one of which returns no row, each on the session's
+  warehouse, which resumes if it is suspended.
+- **`FLOAT` watermarks.** That the text of a `FLOAT` bound converts back to the same value is not
+  established. Other types, such as `BOOLEAN` or `TIME`, get the session's text of the bound.
+- **Input formats.** A user or account whose `DATE_INPUT_FORMAT` or `TIMESTAMP_INPUT_FORMAT` is not
+  `AUTO` may read the literals otherwise: no claim.
+- **`TRUNCATE` and load metadata.** A replace deletes the target's load metadata, which cannot be
+  recovered: a target also loaded by `COPY INTO` from an external stage, or by Snowpipe, may load
+  the same files again later. The deleted rows stay in Time Travel for the retention period, and so
+  in the account's storage.
+- **DDL from other sessions.** A DDL statement on the target from another session while the
+  transaction runs is what Snowflake's documentation says to avoid.
+- **A target dropped during a write.** Between the connector's metadata lookup and its own existence
+  check, another session can drop the target; the connector then creates it from the DataFrame's
+  schema before its transaction. The window is the length of the stage upload.
+- **An empty DataFrame on a replace.** The connector runs its transaction, the `TRUNCATE` and a
+  `COPY` over a prefix with no file. That this `COPY` succeeds with zero rows is not established by
+  a source read; the opt-in integration tests check that the target ends up empty.
+- **Columns.** With the default `column_mismatch_behavior`, a write carries exactly the target's
+  columns. `column_mismatch_behavior=ignore` and `continue_on_error=on` are the job's choice.
+- **Spark task retries.** Whether a task re-run after its upload stages its partition twice, and the
+  `COPY` loads it twice, is not established.
+- **Names.** An unquoted reserved word fails. With the connector at 3.2.1 or 3.2.2, columns whose
+  names contain `"` behave differently than at 3.2.3.
+- **Credentials in Spark's plans.** From 3.2.1 the connector registers its sensitive options with
+  Spark's redaction; with an older release, the key or the token may show in plans, logs or the
+  Spark UI.
+- **Authentication.** Only an unencrypted private key and an OAuth access token. Refreshing an
+  expired token is the job's.
+- **Not verified.** Several Snowflake behaviours above (the conversion of strings in comparisons,
+  the formats of timestamps, the privileges, the visibility of a transaction to other sessions, the
+  `COPY` of no file) are documented from Snowflake's manual and are checked by the opt-in
+  integration tests, not established by a source read.
+- Password authentication, a Python client, upsert, merge, delete, any DDL on the target, custom
+  queries, column projection, Snowflake streams, change tracking, Snowpipe, Structured Streaming,
+  Iceberg, hybrid, external and dynamic tables, views, and serverless compute are not covered.
+
 ### Disk: `DiskReader`, `DiskWriter`
 
 ```python
@@ -4382,7 +4857,9 @@ far:
 | `bigquery` | `google-cloud-bigquery>=3.20` | `BigQueryWriter` always; `BigQueryReader` only for watermark reads |
 
 The MongoDB connectors have no extra: `MongoDBReader` imports only pyspark, lazily, and the MongoDB
-Spark Connector is a JAR that the runtime provides.
+Spark Connector is a JAR that the runtime provides. Nor do the Snowflake connectors:
+`SnowflakeReader` and `SnowflakeWriter` import only pyspark, lazily, and the Snowflake Connector for
+Spark and the Snowflake JDBC driver are JARs that the runtime provides.
 
 The pattern:
 
@@ -4406,6 +4883,8 @@ The pattern:
    Connector/J is one too: `MySQLReader` needs no extra, and `MySQLWriter` needs `mysql` only for
    PyMySQL, which runs its transaction on the driver. `MySQLCDCReader` always needs `mysql-cdc`,
    for PyMySQL and for the library that decodes the binary log on the driver; the `mysql` extra
-   does not hold that library, because `MySQLWriter` never imports it.
+   does not hold that library, because `MySQLWriter` never imports it. The Snowflake Connector for
+   Spark and the Snowflake JDBC driver are prerequisites too: the Snowflake connectors need no extra
+   at all, and no Python client.
 5. The `dev` dependency group holds the packages of every extra, so that `uv sync` gives an
    environment where the whole suite and mypy run.

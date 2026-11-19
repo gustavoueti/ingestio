@@ -57,18 +57,19 @@ is a change to the library, and this table grows with it.
 | [MongoDB](docs/concepts/connectors.md#mongodb-mongodbconnection-mongodbreader) | `mongodb` | `MongoDBReader` | — | yes | — |
 | [MySQL](docs/concepts/connectors.md#mysql-mysqlconnection-mysqlreader-mysqlwriter) | `mysql` | `MySQLReader` | `MySQLWriter` | yes | `mysql`, for the writer |
 | [MySQL CDC](docs/concepts/connectors.md#mysql-cdc-mysqlcdcreader) | `mysql_cdc` | `MySQLCDCReader` | — | yes | `mysql-cdc` |
+| [Snowflake](docs/concepts/connectors.md#snowflake-snowflakeconnection-snowflakereader-snowflakewriter) | `snowflake` | `SnowflakeReader` | `SnowflakeWriter` | yes | — |
 
 - **Spark:** the connector reads into a Spark DataFrame and writes from one. It expects a Spark
   session to be running already, and never starts one: Databricks provides it; elsewhere, create
   it before the process runs, for example with `SparkSession.builder.getOrCreate()`. Some systems
   also need a package in that session, such as the PostgreSQL JDBC driver, MySQL Connector/J, the
-  MongoDB Spark Connector or Delta Lake on open-source Spark: the system's link gives its
-  environments and prerequisites.
+  MongoDB Spark Connector, the Snowflake Connector for Spark with the Snowflake JDBC driver or
+  Delta Lake on open-source Spark: the system's link gives its environments and prerequisites.
 - **Extra:** installed with `pip install 'ingestio[<extra>]'`, and needed only in the case the
   column names. pyspark is never an extra: the runtime provides it.
 - The keys each system takes are in
   [docs/concepts/configuration.md](docs/concepts/configuration.md#systems-and-keys). `SCD2` writes
-  only to `unity_catalog`, `postgres`, `mysql` and `bigquery`.
+  only to `unity_catalog`, `postgres`, `mysql`, `bigquery` and `snowflake`.
 - The classes are importable from `ingestio.connector.all`, as `PostgresConnection` is in
   [Structuring a job](#structuring-a-job).
 - The connectors planned next are in the [roadmap](#roadmap).

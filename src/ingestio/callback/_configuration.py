@@ -22,6 +22,7 @@ from ingestio.connector.mongodb import MongoDBConnection, MongoDBReader
 from ingestio.connector.mysql import MySQLCDCReader, MySQLConnection, MySQLReader, MySQLWriter
 from ingestio.connector.postgres import PostgresConnection, PostgresReader, PostgresWriter
 from ingestio.connector.s3 import S3Reader, S3Writer
+from ingestio.connector.snowflake import SnowflakeConnection, SnowflakeReader, SnowflakeWriter
 from ingestio.connector.unity_catalog import UnityCatalogReader, UnityCatalogWriter
 from ingestio.connector.volume import VolumeReader, VolumeWriter
 
@@ -76,6 +77,14 @@ _SOURCES: Mapping[str, _System] = MappingProxyType(
             ("connection",),
             MySQLConnection,
         ),
+        "snowflake": _System(
+            SnowflakeReader,
+            ("table_name",),
+            ("watermark_column", "options"),
+            ("connection", *_SPARK_READ),
+            ("connection",),
+            SnowflakeConnection,
+        ),
         "mongodb": _System(
             MongoDBReader,
             ("database", "collection"),
@@ -120,6 +129,14 @@ _TARGETS: Mapping[str, _System] = MappingProxyType(
             ("connection",),
             ("connection",),
             MySQLConnection,
+        ),
+        "snowflake": _System(
+            SnowflakeWriter,
+            ("table_name",),
+            ("options",),
+            ("connection",),
+            ("connection",),
+            SnowflakeConnection,
         ),
         "s3": _System(S3Writer, ("path", "format"), ("options",)),
         "gcs": _System(GcsWriter, ("path", "format"), ("options",)),
@@ -311,7 +328,10 @@ def build_connector(
 
 # The target systems that SCD2 supports.
 _SCD2_SYSTEMS = MappingProxyType(
-    {name: _TARGETS[name] for name in ("bigquery", "mysql", "postgres", "unity_catalog")}
+    {
+        name: _TARGETS[name]
+        for name in ("bigquery", "mysql", "postgres", "snowflake", "unity_catalog")
+    }
 )
 # The keys of the `target` section that the reader of the same system takes as well.
 _READER_KEYS = ("table_name", "billing_project")

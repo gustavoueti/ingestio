@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from ingestio.connector.mongodb import MongoDBConnection
     from ingestio.connector.mysql import MySQLConnection
     from ingestio.connector.postgres import PostgresConnection
+    from ingestio.connector.snowflake import SnowflakeConnection
 
 __all__ = ["SCD2", "AppendOnly", "FullLoad", "ReadSource"]
 
@@ -28,10 +29,10 @@ class ReadSource(Callback):
         config: Path of the job's JSON configuration file. Its `source` section names the
             system and holds the reader's parameters.
         into: Key of `Process.state` that receives the payload.
-        connection: Where a PostgreSQL, MongoDB or MySQL source lives, with its credentials: a
-            `PostgresConnection` for the `postgres` system, a `MongoDBConnection` for the
-            `mongodb` system, a `MySQLConnection` for the `mysql` and `mysql_cdc` systems. Required
-            by all of them.
+        connection: Where a PostgreSQL, MongoDB, MySQL or Snowflake source lives, with its
+            credentials: a `PostgresConnection` for the `postgres` system, a `MongoDBConnection`
+            for the `mongodb` system, a `MySQLConnection` for the `mysql` and `mysql_cdc`
+            systems, a `SnowflakeConnection` for the `snowflake` system. Required by all of them.
         client: SDK client of the source, for the systems that take one.
         watermark_value: Last watermark already ingested, for the systems that take one.
         binlog_position: Binary log position the last run reached, (file, offset), for the
@@ -44,7 +45,9 @@ class ReadSource(Callback):
         config: str | os.PathLike[str],
         *,
         into: str = "records",
-        connection: PostgresConnection | MongoDBConnection | MySQLConnection | None = None,
+        connection: (
+            PostgresConnection | MongoDBConnection | MySQLConnection | SnowflakeConnection | None
+        ) = None,
         client: object | None = None,
         watermark_value: int | Decimal | str | date | None = None,
         binlog_position: tuple[str, int] | None = None,
@@ -76,9 +79,9 @@ class AppendOnly(Callback):
         config: Path of the job's JSON configuration file. Its `target` section names the
             system and holds the writer's parameters.
         key: Key of `Process.state` holding the value to write.
-        connection: Where a PostgreSQL or MySQL target lives, with its credentials: a
+        connection: Where a PostgreSQL, MySQL or Snowflake target lives, with its credentials: a
             `PostgresConnection` for the `postgres` system, a `MySQLConnection` for the `mysql`
-            system. Required by both.
+            system, a `SnowflakeConnection` for the `snowflake` system. Required by all three.
         client: SDK client of the target, for the systems that take one.
     """
 
@@ -87,7 +90,7 @@ class AppendOnly(Callback):
         config: str | os.PathLike[str],
         *,
         key: str = "records",
-        connection: PostgresConnection | MySQLConnection | None = None,
+        connection: PostgresConnection | MySQLConnection | SnowflakeConnection | None = None,
         client: object | None = None,
     ) -> None:
         self._writer = build_connector(
@@ -106,9 +109,9 @@ class FullLoad(Callback):
         config: Path of the job's JSON configuration file. Its `target` section names the
             system and holds the writer's parameters.
         key: Key of `Process.state` holding the value to write.
-        connection: Where a PostgreSQL or MySQL target lives, with its credentials: a
+        connection: Where a PostgreSQL, MySQL or Snowflake target lives, with its credentials: a
             `PostgresConnection` for the `postgres` system, a `MySQLConnection` for the `mysql`
-            system. Required by both.
+            system, a `SnowflakeConnection` for the `snowflake` system. Required by all three.
         client: SDK client of the target, for the systems that take one.
     """
 
@@ -117,7 +120,7 @@ class FullLoad(Callback):
         config: str | os.PathLike[str],
         *,
         key: str = "records",
-        connection: PostgresConnection | MySQLConnection | None = None,
+        connection: PostgresConnection | MySQLConnection | SnowflakeConnection | None = None,
         client: object | None = None,
     ) -> None:
         self._writer = build_connector(
@@ -152,9 +155,9 @@ class SCD2(Callback):
             dimension's system and table, and its `scd2` section holds the key columns, the
             effective-time column and the other parameters of the history.
         key: Key of `Process.state` holding the batch, a Spark DataFrame.
-        connection: Where a PostgreSQL or MySQL target lives, with its credentials: a
+        connection: Where a PostgreSQL, MySQL or Snowflake target lives, with its credentials: a
             `PostgresConnection` for the `postgres` system, a `MySQLConnection` for the `mysql`
-            system. Required by both.
+            system, a `SnowflakeConnection` for the `snowflake` system. Required by all three.
         client: BigQuery client of the target, for the `bigquery` system.
     """
 
@@ -163,7 +166,7 @@ class SCD2(Callback):
         config: str | os.PathLike[str],
         *,
         key: str = "records",
-        connection: PostgresConnection | MySQLConnection | None = None,
+        connection: PostgresConnection | MySQLConnection | SnowflakeConnection | None = None,
         client: object | None = None,
     ) -> None:
         plan = build_scd2(config, {"connection": connection, "client": client})

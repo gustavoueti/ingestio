@@ -59,3 +59,8 @@ own.
   extra asks for no extra of that package: the connectors need neither pandas nor pyarrow.
   spark-bigquery-connector is a JAR that the runtime provides, a prerequisite like pyspark, and
   never a Python dependency.
+- The Snowflake connectors ([specs/snowflake_connectors.md](../../specs/snowflake_connectors.md))
+  add no extra. They import no Python package besides pyspark, and the Snowflake Connector for
+  Spark and the Snowflake JDBC driver are JARs that the runtime provides, prerequisites like
+  pyspark, never a Python dependency. The writer's transaction is the connector's own, so no
+  Python client runs on the driver.

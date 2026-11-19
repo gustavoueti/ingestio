@@ -101,10 +101,13 @@ HEX_LITERAL = re.compile(r"X'[0-9a-f]*'")
 ANY_EXTRA_MARKER = re.compile(r"""\bextra\s*==\s*["'][^"']+["']""")
 SSL_MODES = ("DISABLED", "PREFERRED", "REQUIRED", "VERIFY_CA", "VERIFY_IDENTITY")
 SOURCE_NAMES = (
-    "bigquery, disk, gcs, json_api, mongodb, mysql, mysql_cdc, postgres, s3, unity_catalog, volume"
+    "bigquery, disk, gcs, json_api, mongodb, mysql, mysql_cdc, postgres, s3, snowflake, "
+    "unity_catalog, volume"
 )
-TARGET_NAMES = "bigquery, disk, gcs, json_lines, mysql, postgres, s3, unity_catalog, volume"
-SCD2_NAMES = "bigquery, mysql, postgres, unity_catalog"
+TARGET_NAMES = (
+    "bigquery, disk, gcs, json_lines, mysql, postgres, s3, snowflake, unity_catalog, volume"
+)
+SCD2_NAMES = "bigquery, mysql, postgres, snowflake, unity_catalog"
 DEFAULT_SOURCE: dict[str, object] = {"system": "mysql", "table_name": "shop.orders"}
 DEFAULT_TARGET: dict[str, object] = {"system": "mysql", "table_name": "shop.orders"}
 POSTGRES_SECTION: dict[str, object] = {"system": "postgres", "table_name": "public.orders"}
