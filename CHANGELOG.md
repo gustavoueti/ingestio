@@ -2,6 +2,21 @@
 
 <!-- version list -->
 
+## v0.8.0 (2026-11-19)
+
+### Chores
+
+- **deps**: Bump pyasn1 from 0.6.4 to 0.6.5 in the uv group across 1 directory
+  ([#19](https://github.com/gustavoueti/ingestio/pull/19),
+  [`b5c275c`](https://github.com/gustavoueti/ingestio/commit/b5c275cdc822c9b4ce50a3e33c393a6347bcac36))
+
+### Features
+
+- **connector**: Add MySQLCDCReader to read the binary log
+  ([#18](https://github.com/gustavoueti/ingestio/pull/18),
+  [`6a867c0`](https://github.com/gustavoueti/ingestio/commit/6a867c05d8671de5a676f2c6a67ff292875608c3))
+
+
 ## v0.7.0 (2026-10-25)
 
 ### Features
